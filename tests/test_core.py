@@ -1,7 +1,8 @@
 # Copyright (C) 2026 The ignite-scribe contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Offline checks: redaction, rendering, and the MCP protocol over a fake screen. The live Win32 source has one
-smoke test, skipped off Windows."""
+"""Offline checks: redaction, rendering, the MCP protocol over a fake screen, and that excluded windows are never
+walked. Live checks (Windows only): the Win32 snapshot, and UI Automation on a native window holding a password
+field whose value must appear nowhere."""
 import io
 import json
 import os
@@ -11,12 +12,13 @@ from pathlib import Path
 
 import pytest
 
+from ignite_scribe import collect as collect_mod
 from ignite_scribe.mcp_server import Server, main
 from ignite_scribe.redact import WITHHELD, Policy, luhn, scrub
 from ignite_scribe.snapshot import UNTRUSTED, Rect, Snapshot, TextBlock, Window
 
 
-def fake():
+def fake(text=True, max_windows=6):
     ws = [Window(1, "README.md - Visual Studio Code", "Code.exe", 10, Rect(0, 0, 1920, 1080), 0, focused=True,
                  text=[TextBlock("token ghp_" + "a" * 36 + " end"), TextBlock("card 4111 1111 1111 1111")]),
           Window(2, "Vault", "KeePassXC.exe", 11, Rect(100, 100, 900, 700), 1),
@@ -88,3 +90,92 @@ def test_live_windows_snapshot_smoke():
     assert out.returncode == 0, out.stderr
     d = json.loads(out.stdout)
     assert d["note"] == UNTRUSTED and d["monitors"] and isinstance(d["windows"], list)
+
+
+def test_excluded_windows_are_never_walked(monkeypatch):
+    walked = []
+    monkeypatch.setattr(collect_mod.windows, "snapshot", lambda: fake())
+    monkeypatch.setattr(collect_mod.uia, "available", lambda: True)
+    monkeypatch.setattr(collect_mod.uia, "walk",
+                        lambda hwnd, cap, sec: (walked.append(hwnd), ([TextBlock(f"in {hwnd}")], []))[1])
+    snap = collect_mod.collect(Policy())
+    assert walked == [1]           # KeePassXC (process) and the bank sign-in (title, and minimized) are skipped
+    assert "uia" in snap.sources and snap.windows[0].text[0].text == "in 1"
+
+
+def test_missing_uia_degrades_to_windows_only(monkeypatch):
+    monkeypatch.setattr(collect_mod.windows, "snapshot", lambda: fake())
+    monkeypatch.setattr(collect_mod.uia, "available", lambda: False)
+    snap = collect_mod.collect(Policy())
+    assert snap.sources[-1].startswith("uia unavailable")
+
+
+@pytest.fixture
+def native_window():
+    texts = dict(title="scribe uia probe", label="Probe label 7Q", plain="plain value 3K", secret="hunter2-Zx9-secret")
+    proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name("password_window.py")), *texts.values()],
+                            stdout=subprocess.PIPE, text=True)
+    try:
+        hwnd = int(proc.stdout.readline())
+        yield hwnd, texts
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="UI Automation")
+def test_uia_reads_text_but_never_a_password(native_window):
+    pytest.importorskip("comtypes")
+    from ignite_scribe import uia
+    hwnd, t = native_window
+    blocks, notes = uia.walk(hwnd, node_cap=200, seconds=5.0)
+    dump = json.dumps([b.__dict__ for b in blocks], default=str)
+    assert t["label"] in dump and t["plain"] in dump, (dump, notes)
+    assert "[password field]" in dump
+    assert t["secret"] not in dump and "hunter2" not in dump
+    assert any(b.role == "Edit" for b in blocks)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="UI Automation")
+def test_uia_skips_the_window_when_policy_excludes_its_title(native_window, monkeypatch):
+    pytest.importorskip("comtypes")
+    from ignite_scribe import uia
+    hwnd, t = native_window
+    calls = []
+    real = uia.walk
+    monkeypatch.setattr(uia, "walk", lambda h, *a: (calls.append(h), real(h, *a))[1])
+    policy = Policy(exclude_title_patterns=[r"uia probe"])
+    snap, counts = policy.apply(collect_mod.collect(policy, max_windows=50))
+    assert hwnd not in calls
+    w = next(w for w in snap.windows if w.hwnd == hwnd)
+    assert w.redacted and not w.text and t["plain"] not in snap.to_json()
+
+
+class FakeElement:
+    """Stands in for a cached UIA element whose Value would leak if it were ever requested."""
+    def __init__(self, password, name="Field", value="hunter2-Zx9-secret"):
+        self.CachedIsPassword, self.CachedName, self.CachedControlType = password, name, 50004
+        self.value, self.value_requests = value, 0
+
+    @property
+    def CachedBoundingRectangle(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(left=0, top=0, right=10, bottom=10)
+
+    def GetCachedPropertyValue(self, pid):
+        return True                      # IsValuePatternAvailable
+
+    def GetCurrentPropertyValue(self, pid):
+        self.value_requests += 1
+        return self.value
+
+
+def test_password_value_is_never_requested():
+    """The live test cannot show this: Windows itself returns '' for a password Edit's Value. Here the provider
+    would hand the secret over, so only ignite-scribe's own guard keeps it out."""
+    from ignite_scribe import uia
+    pw, plain = FakeElement(True), FakeElement(False, value="plain value")
+    b, role = uia._block(pw)
+    assert b.text == "[password field]" and role == "Edit" and pw.value_requests == 0
+    b, _ = uia._block(plain)
+    assert b.text == "Field: plain value" and plain.value_requests == 1

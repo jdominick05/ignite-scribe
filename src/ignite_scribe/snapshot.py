@@ -53,6 +53,7 @@ class Window:
     minimized: bool = False
     redacted: bool = False        # title / content withheld by the redaction policy
     text: list[TextBlock] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)   # how the content was gathered (caps hit, errors)
 
 
 @dataclass
@@ -97,4 +98,7 @@ class Snapshot:
             if w.text:
                 out += ["", f"## {w.title or '(untitled)'}", ""]
                 out += [f"- [{b.source}{', ' + b.role if b.role else ''}] {b.text}" for b in w.text]
+            if w.notes:
+                out += ["", f"_{'; '.join(w.notes)}_"] if w.text else ["", f"## {w.title or '(untitled)'}", "",
+                                                                    f"_{'; '.join(w.notes)}_"]
         return "\n".join(out) + "\n"

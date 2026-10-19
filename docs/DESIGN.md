@@ -7,8 +7,12 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
 
 ## Sources, in order
 1. **Win32 windows** (done): visible top-level windows, z-order, focus, bounds, owning process; monitors.
-2. **UI Automation** (next): control trees of the focused and visible windows (names, roles, values, bounds,
-   document text). Password fields (`IsPassword`) are never read.
+2. **UI Automation** (done): the control trees of the focused window, then the topmost ones (names, roles,
+   values, bounds). Password fields (`IsPassword`) are never read. Each walk is bounded (node cap, deadline, UI
+   Automation's own timeouts). About 120 ms for a whole pass over 4 windows on Desktop 2 (one sitting, warm).
+   Known gaps:
+   - elevated apps (Task Manager) are hidden from a normal process by UIPI, and are noted as unreadable;
+   - document and terminal text behind the Text pattern is not read yet, only the Value pattern.
 3. **Change-driven capture**: Desktop Duplication reports the dirty rectangles per frame, so only changed regions
    are reprocessed. A static desktop costs nearly nothing.
 4. **NPU vision** for regions UI Automation leaves blank (images, video, games, remote desktops, canvas apps),
@@ -21,7 +25,7 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
 
 ## Consumers
 - **MCP server** (done, stdio): the agent asks only when it needs the screen. Tools: `scribe_status`,
-  `get_screen_state`, `list_windows`. Planned: `find_on_screen`, `screen_changes(since)`,
+  `get_screen_state` (with UI Automation text, `text` / `max_windows` arguments), `list_windows` (no content). Planned: `find_on_screen`, `screen_changes(since)`,
   `search_screen_history`.
 - **Hook** (planned): a short screen summary on each prompt. It is simpler, but it sends screen content with every
   request, so it stays opt-in.
