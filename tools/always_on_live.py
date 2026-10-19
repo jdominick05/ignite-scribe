@@ -28,7 +28,7 @@ def main():
     if a.canvas:
         import subprocess
         canvas = subprocess.Popen([sys.executable, str(Path(__file__).with_name("canvas_window.py")),
-                                   "--seconds", str(a.seconds + 30)], stdout=subprocess.PIPE, text=True)
+                                   "--seconds", str(a.seconds + 30), "--topmost"], stdout=subprocess.PIPE, text=True)
         canvas.stdout.readline()
         time.sleep(1.0)
     os.environ["IGNITE_SCRIBE_ALWAYS_ON_CPU"] = "1"

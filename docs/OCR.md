@@ -167,3 +167,19 @@ A detector shaped for the engine is worth training only if full-window repaints 
 The live run on the real desktop read nothing in 5 minutes: both windows were described by UI Automation. A
 synthetic canvas window (`tools/canvas_window.py`) opened behind the focused window, 100% covered, so its
 masked capture read nothing too, which is the masking working as intended.
+
+**Live, with a visible synthetic canvas (2026-10-19, Desktop 2, CPU measurement mode, no NPU; the user agreed to
+a topmost window for 3 minutes).** `tools/always_on_live.py --canvas --seconds 180` (budget lifted, 2 s gap):
+
+| reads/min | pixels per read | lines per read | detect | recognize | worker busy | server process CPU |
+|---:|---:|---:|---:|---:|---:|---:|
+| 24.7 | 700 k (the whole 1000x700 window) | 27 | 80 ms | 326 ms | 17% of the wall time | 2.0% |
+
+- The canvas repaints its whole area each second, as a scrolling log, a chat or a video does. So every changed
+  rectangle was the whole window, and every read recognized every line again. The "a line or two" case in the
+  table above holds only for content that changes in place.
+- The recognizer dominates (326 of 406 ms). On the NPU, ScribeRec's measured 0.92 ms backbone plus about 1 ms of
+  tail gives about 50 ms for 27 lines (DERIVED).
+- The next saving is to skip lines that did not change: hash each detected line's pixels and reuse its text. For
+  scrolling content that is nearly every line.
+- The default budget (6 s of OCR a minute) would cap this window at about 15 reads a minute.

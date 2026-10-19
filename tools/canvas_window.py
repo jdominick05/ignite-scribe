@@ -42,10 +42,13 @@ def main():
     ap.add_argument("--every", type=float, default=1.0)
     ap.add_argument("--lines", type=int, default=2)
     ap.add_argument("--seconds", type=float, default=600)
+    ap.add_argument("--topmost", action="store_true", help="stay above other windows (a background process "
+                                                            "cannot take the foreground; ask the user first)")
     a = ap.parse_args()
     rng = random.Random(11)
     user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-    top = user32.CreateWindowExW(0, "STATIC", "", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 160, 140, 1000, 700,
+    top = user32.CreateWindowExW(0x8 if a.topmost else 0, "STATIC", "", WS_OVERLAPPEDWINDOW | WS_VISIBLE,  # 8: TOPMOST
+                                 160, 140, 1000, 700,
                                  None, None, None, None)
     user32.SetWindowTextW(top, "Canvas log - synthetic")
     font = gdi32.CreateFontW(-18, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0, "Segoe UI")   # 5 = CLEARTYPE_QUALITY
