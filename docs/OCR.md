@@ -183,3 +183,19 @@ a topmost window for 3 minutes).** `tools/always_on_live.py --canvas --seconds 1
 - The next saving is to skip lines that did not change: hash each detected line's pixels and reuse its text. For
   scrolling content that is nearly every line.
 - The default budget (6 s of OCR a minute) would cap this window at about 15 reads a minute.
+
+**Reusing unchanged lines (`ocr_pipeline.line_key`).** Each detected line is keyed by a digest of its ink: the
+crop trimmed to the pixels that differ from its background, so the key holds however loosely the box sits and
+wherever the line has scrolled to. A line already read is not recognized again. Lines touching the region's edge
+(possibly cut off) and reads under 0.9 confidence are not cached. Only digests and text are kept, in the worker's
+memory, at most 2048 lines. `tools/scroll_cache.py` scrolls synthetic pages through a 1000x700 view, 37 px a
+frame, 40 frames, on the CPU:
+
+| page seed | lines reused | recognize per frame, cached / fresh | CER, cached / fresh |
+|---|---:|---|---|
+| 91 | 89.1% | 12.6 / 153.2 ms | 0.00184 / 0.00161 |
+| 92 | 88.9% | 12.5 / 128.3 ms | 0.00177 / 0.00149 |
+| 93 | 89.9% | 12.9 / 140.7 ms | 0.00078 / 0.00149 |
+
+The CER is the same on average (0.0015 both ways). A cached read keeps the first read's result, right or wrong,
+while fresh reads vary from frame to frame, so scrolling text also stops flickering in change events.

@@ -15,7 +15,9 @@ Lines whose recognizer confidence is under ``min_score`` are dropped.
 """
 from __future__ import annotations
 
+import hashlib
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 import numpy as np
@@ -72,7 +74,7 @@ def merge_rows(boxes, gap: float) -> list[tuple[int, int, int, int]]:
 class OcrPipeline:
     def __init__(self, det_path, rec_path, dict_path, max_side: int = 1920, thresh: float = 0.3,
                  box_thresh: float = 0.6, unclip: float = 1.5, min_score: float = 0.5, bucket=bucket_dynamic,
-                 threads: int = 4, merge_gap: float = 1.0):
+                 threads: int = 4, merge_gap: float = 1.0, cache_size: int = 2048):
         self.merge_gap = merge_gap
         import onnxruntime as ort
         o = ort.SessionOptions()
@@ -83,6 +85,8 @@ class OcrPipeline:
         self.max_side, self.thresh, self.box_thresh = max_side, thresh, box_thresh
         self.unclip, self.min_score, self.bucket = unclip, min_score, bucket
         self.last = {}
+        self.cache: OrderedDict = OrderedDict()      # line digest -> (text, score); see line_key
+        self.cache_size, self.cache_min_score = cache_size, 0.9
 
     def boxes(self, bgr: np.ndarray) -> list[tuple[int, int, int, int]]:
         import cv2
@@ -119,15 +123,46 @@ class OcrPipeline:
         t0 = time.perf_counter()
         boxes = self.boxes(bgr)
         t1 = time.perf_counter()
-        lines = []
+        lines, hits = [], 0
         for b in boxes:
-            text, score = self.read(bgr[b[1]:b[3], b[0]:b[2]])
+            crop = bgr[b[1]:b[3], b[0]:b[2]]
+            edge = b[0] <= 0 or b[1] <= 0 or b[2] >= bgr.shape[1] or b[3] >= bgr.shape[0]
+            key = line_key(crop) if self.cache_size and not edge else None   # a cut-off line is never cached
+            got = self.cache.get(key) if key is not None else None
+            if got is not None:
+                self.cache.move_to_end(key)
+                hits += 1
+            else:
+                got = self.read(crop)
+                if key is not None and got[1] >= self.cache_min_score:   # a doubtful read is read again next time
+                    self.cache[key] = got
+                    if len(self.cache) > self.cache_size:
+                        self.cache.popitem(last=False)
+            text, score = got
             if text.strip() and score >= self.min_score:
                 lines.append(Line(b, text, score))
         t2 = time.perf_counter()
         self.last = dict(det_ms=round((t1 - t0) * 1000, 2), rec_ms=round((t2 - t1) * 1000, 2), boxes=len(boxes),
-                         kept=len(lines))
+                         kept=len(lines), cache_hits=hits)
         return lines
+
+
+def line_key(crop: np.ndarray, tol: int = 24) -> bytes | None:
+    """A digest of a line's ink, the same however loosely the detector's box sits around it.
+
+    The crop is trimmed to the rows and columns that differ from its corner colour (the background) by more than
+    ``tol``, and the trimmed pixels are hashed with their shape. Identical text drawn identically gives the same
+    key wherever it moved (a scrolling log), and any changed pixel inside the ink gives another. None when the
+    crop is all background. Only digests are kept, never pixels."""
+    if crop.size == 0:
+        return None
+    bg = crop[0, 0].astype(np.int16)
+    ink = np.abs(crop.astype(np.int16) - bg).max(axis=2) > tol
+    rows, cols = np.flatnonzero(ink.any(axis=1)), np.flatnonzero(ink.any(axis=0))
+    if not len(rows):
+        return None
+    t = np.ascontiguousarray(crop[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1])
+    return hashlib.blake2b(t.tobytes() + repr(t.shape).encode(), digest_size=16).digest()
 
 
 def _cv_resize(img, wh):

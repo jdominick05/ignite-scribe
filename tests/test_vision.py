@@ -173,3 +173,20 @@ def test_mcp_ocr_windows_scrubs_and_drops_masked(monkeypatch):
     assert not snap.windows[1].text                                                 # the source was not written
     md = s.call("ocr_windows", {})
     assert "[ocr] Quarterly report" in md and "1 secrets withheld" in md
+
+
+def test_line_key_ignores_box_slack_and_position_but_not_ink():
+    from ignite_scribe.ocr_pipeline import line_key
+    bg = np.full((40, 200, 3), 250, np.uint8)
+    ink = bg.copy()
+    ink[12:28, 20:150] = 30                                  # a "line" of dark ink
+    ink[15:25, 60:70] = 250
+    loose = ink                                              # the box with slack around the ink
+    tight = ink[10:30, 15:160]                               # the same line, boxed tighter
+    moved = np.full((60, 260, 3), 250, np.uint8)
+    moved[22:42, 35:180] = tight                             # scrolled: same ink, elsewhere
+    assert line_key(loose) == line_key(tight) == line_key(moved)
+    changed = ink.copy()
+    changed[20, 100] = 200                                   # one pixel of the ink differs
+    assert line_key(changed) != line_key(ink)
+    assert line_key(bg) is None and line_key(bg[:0]) is None

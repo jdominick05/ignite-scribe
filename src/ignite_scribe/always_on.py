@@ -150,7 +150,7 @@ class AlwaysOn:
         self._held: dict[int, Rect] = {}             # changed areas waiting for their window's next turn
         self._spent: list[tuple[float, float]] = []  # (time, ms) of OCR calls in the last minute
         self.paused: list[str] = []
-        self.stats = dict(reads=0, lines=0, ms_total=0.0, det_ms=0.0, rec_ms=0.0, pixels=0, deferred_budget=0,
+        self.stats = dict(reads=0, lines=0, cache_hits=0, ms_total=0.0, det_ms=0.0, rec_ms=0.0, pixels=0, deferred_budget=0,
                           errors=0, pause_changes=0)
         self.last_error = None
         self.backend = None
@@ -256,6 +256,7 @@ class AlwaysOn:
             self.stats["ms_total"] += ms
             self.stats["det_ms"] += res.get("det_ms") or 0
             self.stats["rec_ms"] += res.get("rec_ms") or 0
+            self.stats["cache_hits"] += res.get("cache_hits") or 0
             self.stats["pixels"] += img.shape[0] * img.shape[1]
             read += 1
         return read
