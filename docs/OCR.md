@@ -119,3 +119,25 @@ The other route is an engine-native recognizer, trained with quantization in the
   Resize and ten squeeze-excite blocks, none of which the engine runs; not surveyed further.
 - Width buckets for fixed-width NPU builds (`ocr_pipeline.bucket`). The CPU model takes any width.
 - Accuracy on real screens beyond one terminal window.
+
+## The route chosen: an engine-native recognizer (2026-10-19)
+The user chose to train a recognizer shaped for the int8 engine rather than extend the engine for PP-OCRv5. The
+ignite-xdna session estimated PP-OCRv5's backbone at about 130 ms a line on the bf16 engine (DERIVED). Its
+depthwise convolutions are lowered dense (20x the MACs) and its 3/6/12-row maps pad to 20-row tiles (65x).
+
+`tools/scriberec.py` defines the candidate:
+- an 80-row input, two square stride-2 stages, then everything at 20 rows;
+- dense 3x3 convolutions with residual adds and ReLU, channels in multiples of 32;
+- a CPU tail: a learned weighting over the 20 rows, a 2-layer BiLSTM, and CTC.
+
+Random weights, 80x320, Quark XINT8 (noise calibration), `--task segment`, on the NPU:
+
+| backbone | MACs | layers on the NPU | exact vs reference | dispatch, overlap (default) | no overlap |
+|---|---:|---:|---|---:|---:|
+| 32/64/128, blocks 1/2/3 | 1.95 G | 16 of 16 | 0 steps | 1.58 ms | 1.83 ms |
+| 32/64/96, blocks 1/1/2 | 0.90 G | 12 of 12 | 0 steps | 0.92 ms | 1.08 ms |
+
+The CPU tail takes 0.96-1.07 ms with 4 threads (ORT, 100 runs). A line therefore costs about 1.9 ms (small) or
+2.6 ms (big), against about 6.3 ms for PP-OCRv5 on the CPU. Accuracy is unknown until it is trained. Training
+runs on Desktop 1's 7900 XTX (the "Model Work" session). The trained model's recipe goes to ignite-xdna, which
+compiles and verifies it.
