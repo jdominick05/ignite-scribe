@@ -73,7 +73,8 @@ def test_mcp_protocol_over_stdio_framing():
     replies = [json.loads(ln) for ln in out.getvalue().splitlines()]
     assert [r["id"] for r in replies] == [1, 2, 3, 4, 5, 6]   # no reply to the notification
     assert replies[0]["result"]["serverInfo"]["name"] == "ignite-scribe"
-    assert {t["name"] for t in replies[1]["result"]["tools"]} == {"scribe_status", "get_screen_state", "list_windows"}
+    assert {t["name"] for t in replies[1]["result"]["tools"]} == {"scribe_status", "get_screen_state",
+                                                                 "screen_changes", "list_windows"}
     state = json.loads(replies[2]["result"]["content"][0]["text"])
     assert state["note"] == UNTRUSTED and state["redaction"]["windows_withheld"] == 2
     listed = json.loads(replies[3]["result"]["content"][0]["text"])["windows"]

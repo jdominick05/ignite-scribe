@@ -16,8 +16,24 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
    - the Text pattern (since 0.0.3) is read for its visible ranges only, so scrollback and off-screen pages are
      not in the snapshot. Its multi-line text replaces the element's subtree, so a document's links are not
      listed separately.
-3. **Change-driven capture**: Desktop Duplication reports the dirty rectangles per frame, so only changed regions
-   are reprocessed. A static desktop costs nearly nothing.
+3. **Change-driven capture** (done, `watch.py`): one background thread.
+   - **Change signals:**
+     - WinEvents: focus, create / destroy / show / hide / move / minimize, and name or value changes inside a
+       window;
+     - Desktop Duplication (`dirty.py`): the changed and moved rectangles per frame, mapped to the topmost
+       windows under them. Only the rectangle metadata is read; the desktop image is never mapped.
+   - **Refreshes:** at most every 0.25 s, re-read the window list and walk only the dirty windows among the
+     ones worth reading; the rest keep their content.
+   - **Events:** diff the redacted state (`changes.py`) into numbered events in an in-memory ring.
+     `screen_changes` merges repeats per window by default.
+   - **Fallback:** without duplication (secure desktop, an exclusive full-screen app), the focused window is
+     re-walked every 2 s.
+   - **Measured** on Desktop 2, one sitting, with this terminal animating its title and status lines (not an
+     idle desktop):
+     - 15-48 refreshes in 4-15 s windows, 26-36 ms each on average;
+     - the watcher thread used 4.3-7.4% of one core;
+     - `get_screen_state` from its state returns in under 1 ms, against about 120-140 ms for a fresh walk.
+     - A truly idle desktop was not measured.
 4. **NPU vision** for regions UI Automation leaves blank (images, video, games, remote desktops, canvas apps),
    through ignite-xdna:
    - UI element detection: OmniParser's detector is a fine-tuned YOLOv8 (AGPL), the engine's strongest
@@ -27,9 +43,11 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
    since short single embeddings lose to the iGPU on this NPU).
 
 ## Consumers
-- **MCP server** (done, stdio): the agent asks only when it needs the screen. Tools: `scribe_status`,
-  `get_screen_state` (with UI Automation text, `text` / `max_windows` arguments), `list_windows` (no content). Planned: `find_on_screen`, `screen_changes(since)`,
-  `search_screen_history`.
+- **MCP server** (done, stdio): the agent asks only when it needs the screen. Tools:
+  - `scribe_status` (with the watcher's state);
+  - `get_screen_state`: served from the watcher's state; `refresh` walks afresh;
+  - `screen_changes(since)`: events since a sequence number, with `next_since`;
+  - `list_windows`: no content. Planned: `find_on_screen`, `search_screen_history`.
 - **Hook** (planned): a short screen summary on each prompt. It is simpler, but it sends screen content with every
   request, so it stays opt-in.
 

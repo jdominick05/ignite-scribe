@@ -26,13 +26,13 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import threading
 import time
 
 from .snapshot import Rect, TextBlock
 
-_auto = None
-_cache = None
-_UIA = None
+_UIA = None                 # the generated type library module, shared
+_tls = threading.local()    # the automation object and cache request: one per thread (COM apartment)
 
 # property ids (UIAutomationClient.h)
 NAME, CONTROL_TYPE, BOUNDS, IS_OFFSCREEN, IS_PASSWORD = 30005, 30003, 30001, 30022, 30019
@@ -61,13 +61,15 @@ def available() -> bool:
 
 
 def _init():
-    global _auto, _cache, _UIA
-    if _auto is not None:
-        return
+    """-> (automation, cache request) for the calling thread, creating them (and its COM apartment) once."""
+    global _UIA
+    if getattr(_tls, "auto", None) is not None:
+        return _tls.auto, _tls.cache
     import comtypes
     import comtypes.client
-    with contextlib.redirect_stdout(sys.stderr):   # the stdio MCP channel must stay clean
-        _UIA = comtypes.client.GetModule("UIAutomationCore.dll")
+    if _UIA is None:
+        with contextlib.redirect_stdout(sys.stderr):   # the stdio MCP channel must stay clean
+            _UIA = comtypes.client.GetModule("UIAutomationCore.dll")
     comtypes.CoInitialize()
     auto = comtypes.client.CreateObject(_UIA.CUIAutomation, interface=_UIA.IUIAutomation)
     try:
@@ -80,7 +82,8 @@ def _init():
     cache = auto.CreateCacheRequest()
     for pid in (NAME, CONTROL_TYPE, BOUNDS, IS_OFFSCREEN, IS_PASSWORD, IS_VALUE_AVAILABLE, IS_TEXT_AVAILABLE):
         cache.AddProperty(pid)
-    _auto, _cache = auto, cache
+    _tls.auto, _tls.cache = auto, cache
+    return auto, cache
 
 
 def _rect(el) -> Rect | None:
@@ -149,15 +152,15 @@ def _block(el) -> tuple[TextBlock | None, str, bool]:
 
 def walk(hwnd: int, node_cap: int = 600, seconds: float = 1.0) -> tuple[list[TextBlock], list[str]]:
     """-> (text blocks in tree order, notes such as 'node cap' or 'timeout'). Never raises for app errors."""
-    _init()
+    auto, cache = _init()
     deadline = time.monotonic() + seconds
     notes: list[str] = []
     try:
-        root = _auto.ElementFromHandleBuildCache(hwnd, _cache)
+        root = auto.ElementFromHandleBuildCache(hwnd, cache)
     except Exception as e:  # noqa: BLE001
         return [], [f"uia unavailable: {type(e).__name__}"]
     blocks, stack, seen = [], [root], 0
-    cond = _auto.ControlViewCondition
+    cond = auto.ControlViewCondition
     while stack:
         if seen >= node_cap:
             notes.append(f"stopped at node cap {node_cap}")
@@ -175,7 +178,7 @@ def walk(hwnd: int, node_cap: int = 600, seconds: float = 1.0) -> tuple[list[Tex
                 blocks.append(b)
             if role in NO_DESCEND or el.CachedIsPassword or covered:
                 continue
-            kids = el.FindAllBuildCache(TREESCOPE_CHILDREN, cond, _cache)
+            kids = el.FindAllBuildCache(TREESCOPE_CHILDREN, cond, cache)
             stack.extend(kids.GetElement(i) for i in reversed(range(kids.Length)))   # keep tree order
         except Exception as e:  # noqa: BLE001 - element vanished, provider hung or refused
             if f"error: {type(e).__name__}" not in notes:
