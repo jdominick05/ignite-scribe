@@ -5,7 +5,8 @@
 Opt-in: nothing is recorded unless ``IGNITE_SCRIBE_HISTORY=1``, or the policy sets ``"history": true``.
 - **What is stored:** only what the watcher already redacted. That is its change events (``changes.diff`` of
   redacted snapshots) and, every ``snapshot_s`` while the screen changes, the redacted snapshot. Excluded windows
-  appear as the placeholder title, never their content. No pixels and no OCR text (OCR runs per call).
+  appear as the placeholder title, never their content. No pixels and no OCR text (OCR runs per call). Derived
+  from those: window passages (``passages.py``) and their embedding vectors (``semantic.py``), sealed the same way.
 - **How:** batched chunks in SQLite (``%LOCALAPPDATA%\\ignite-scribe\\history.db``; ``IGNITE_SCRIBE_HISTORY_DB``
   overrides). Each chunk is JSON, compressed, then sealed with AES-256-GCM (``aesgcm``, Windows CNG) under one
   random data key; that key is stored only wrapped with DPAPI for the current Windows user (``dpapi``), so another
@@ -35,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import aesgcm, dpapi
+from .passages import Passages
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, t0 REAL NOT NULL, t1 REAL NOT NULL,
@@ -121,6 +123,7 @@ class History:
         self._pending_lock = threading.Lock()
         self._last_snap_t = 0.0
         self._snap_dirty = True
+        self.passages = Passages()                       # window passages for semantic search (semantic.py)
         self.last_error = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ignite-scribe-history", daemon=True)
@@ -226,10 +229,13 @@ class History:
                 if events:
                     self._snap_dirty = True
                 now = time.time()
+                sd = None
                 if snap is not None and self._snap_dirty and now - self._last_snap_t >= self.snapshot_s:
-                    self._write("snapshot", snap.taken_at, snap.taken_at, 1, snap.to_dict())
+                    sd = snap.to_dict()
+                    self._write("snapshot", snap.taken_at, snap.taken_at, 1, sd)
                     self._last_snap_t, self._snap_dirty = now, False
                     self.stats["snapshots_written"] += 1
+                self.passages.feed(events, sd)
             except queue.Empty:
                 pass
             except Exception as e:  # noqa: BLE001 - history must never take the watcher down
@@ -238,6 +244,17 @@ class History:
                                   or self._stop.is_set()):
                 self.flush()
                 last_flush = time.time()
+            self._write_passages(None if self._stop.is_set() else time.time())
+
+    def _write_passages(self, now):
+        """Store the passages of the buckets that have closed (all of them at close)."""
+        try:
+            ps = self.passages.close(now)
+            if ps:
+                self._write("passages", min(x["t0"] for x in ps), max(x["t1"] for x in ps), len(ps), ps)
+                self.stats["passages_written"] = self.stats.get("passages_written", 0) + len(ps)
+        except Exception as e:  # noqa: BLE001
+            self._error(e)
 
     def flush(self):
         with self._pending_lock:
@@ -251,12 +268,61 @@ class History:
         except Exception as e:  # noqa: BLE001
             self._error(e)
 
-    def _write(self, kind, t0, t1, n, obj):
+    def _write(self, kind, t0, t1, n, obj) -> int:
         self._reload_key()                               # never seal with a key a purge has replaced
         blob = self.seal(kind, t0, t1, n, obj)
         with self._db_lock:
-            self.db.execute("INSERT INTO chunks (kind, t0, t1, n, blob) VALUES (?, ?, ?, ?, ?)", (kind, t0, t1, n, blob))
+            cid = self.db.execute("INSERT INTO chunks (kind, t0, t1, n, blob) VALUES (?, ?, ?, ?, ?)",
+                                  (kind, t0, t1, n, blob)).lastrowid
         self.stats["chunks_written"] += 1
+        return cid
+
+    # ---- semantic index (semantic.py drives it; only the recorder writes) -------------------------------------
+    def _embedded_upto(self, model: str) -> int:
+        with self._db_lock:
+            row = self.db.execute("SELECT v FROM meta WHERE k = ?", (f"embedded:{model}",)).fetchone()
+        return int(row[0]) if row else 0
+
+    def unembedded(self, model: str, limit: int = 8) -> list[tuple[int, float, float, list]]:
+        """Passage chunks not yet embedded with ``model``, oldest first: (id, t0, t1, passages)."""
+        upto = self._embedded_upto(model)
+        with self._db_lock:
+            rows = self.db.execute("SELECT id, t0, t1, n, blob FROM chunks WHERE kind = 'passages' AND id > ? "
+                                   "AND t1 >= ? ORDER BY id LIMIT ?", (upto, self.horizon(), limit)).fetchall()
+        out, bad = [], []
+        for cid, t0, t1, n, blob in rows:
+            ps = self._open("passages", t0, t1, n, blob, bad)
+            out.append((cid, t0, t1, ps or []))
+        return out
+
+    def add_vectors(self, model: str, src: int, t0: float, t1: float, meta: list[dict], vecs: bytes):
+        """Store the vectors of passage chunk ``src`` (float16, row-major) and mark it embedded."""
+        if not self.recorder:
+            return
+        if meta:
+            self._write("vectors", t0, t1, len(meta), dict(model=model, src=src, meta=meta, vecs=vecs.hex()))
+        with self._db_lock:
+            self.db.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", (f"embedded:{model}", src))
+
+    def vector_chunks(self, model: str, since: float, until: float, bad: list):
+        """(t0, t1, chunk) for the vectors chunks of ``model`` in range, newest first."""
+        for t0, t1, c in self._chunks("vectors", max(since, self.horizon()), until, bad):
+            if c.get("model") == model:
+                yield t0, t1, c
+
+    def passages_of(self, src: int) -> list[dict]:
+        with self._db_lock:
+            row = self.db.execute("SELECT t0, t1, n, blob FROM chunks WHERE id = ? AND kind = 'passages'",
+                                  (src,)).fetchone()
+        return (self._open("passages", *row, []) or []) if row else []
+
+    def index_status(self, model: str) -> dict:
+        upto = self._embedded_upto(model)
+        with self._db_lock:
+            r = self.db.execute("SELECT COUNT(*), COALESCE(SUM(n), 0) FROM chunks WHERE kind = 'passages' AND id > ?",
+                                (upto,)).fetchone()
+            v = self.db.execute("SELECT COALESCE(SUM(n), 0) FROM chunks WHERE kind = 'vectors'").fetchone()
+        return dict(model=model, vectors=v[0], backlog_chunks=r[0], backlog_passages=r[1])
 
     def _error(self, e):
         self.stats["errors"] += 1
@@ -290,6 +356,8 @@ class History:
         self._stop.set()
         self._thread.join(10)
         self.flush()
+        if self.recorder:
+            self._write_passages(None)
         with self._db_lock:
             self.db.close()
         self._aead.close()

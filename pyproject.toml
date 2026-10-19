@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ignite-scribe"
-version = "0.0.7"
+version = "0.0.8"
 description = "The desktop screen as state any agent can read: Win32 + UI Automation first, NPU vision for the pixels."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -14,6 +14,7 @@ dependencies = []   # the window source and the MCP server are ctypes / stdlib o
 [project.optional-dependencies]
 uia = ["comtypes>=1.4.17"]   # UI Automation (UIAutomationCore through COM)
 vision = ["numpy>=2.3"]       # the vision stage client (the NPU worker runs in ignite-xdna's Python)
+embed = ["numpy>=2.3", "tokenizers>=0.23", "onnxruntime-directml>=1.24"]   # semantic history worker
 test = ["pytest>=8"]
 
 [project.scripts]

@@ -41,9 +41,11 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
    - text detection and recognition (OCR): done on the CPU, `ocr_windows` (PP-OCRv5 mobile, four times fewer
      character errors than Windows' built-in OCR). The recognizer moves to the NPU when ignite-xdna's bf16
      datapath can run it (see OCR.md).
-5. **History** (done, keyword and time; opt-in): the redacted events and periodic redacted snapshots, in SQLite,
-   sealed per chunk with AES-256-GCM under a DPAPI-wrapped key, kept 7 days or 200 MB. Next: embeddings for
-   semantic "what was on screen when" (batched, since short single embeddings lose to the iGPU on this NPU).
+5. **History** (done; opt-in): the redacted events and periodic redacted snapshots, in SQLite, sealed per chunk
+   with AES-256-GCM under a DPAPI-wrapped key, kept 7 days or 200 MB. Keyword and time search, and semantic search
+   over window passages (bge-small-en-v1.5; passages on the iGPU in fp16 and queries on the CPU, both in a worker
+   process). Measured on the 780M: 38 passages/s in fp16 at batch 32, the same as 8 CPU threads (39), so the gain
+   is the CPU left free. Embeddings move to the NPU only if a batched NPU path beats that.
 
 ## Consumers
 - **MCP server** (done, stdio): the agent asks only when it needs the screen. Tools:

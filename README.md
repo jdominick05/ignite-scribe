@@ -5,7 +5,7 @@ click. It is served over MCP (and, later, a hook). The OS's own structure comes 
 Automation. NPU vision on XDNA1 (via [ignite-xdna](https://github.com/jdominick05/ignite-xdna)) handles only the pixels
 the OS cannot describe.
 
-**Status: 0.0.7.** Two sources: Win32 windows (no dependencies) and UI Automation (the `uia` extra: control
+**Status: 0.0.8.** Two sources: Win32 windows (no dependencies) and UI Automation (the `uia` extra: control
 names, values, and the on-screen text of terminals and documents), kept current by a change-driven watcher
 that re-reads only the windows that changed, with redaction and a stdio MCP server. For windows UI
 Automation cannot describe, `find_ui_elements` finds UI elements (boxes, no text) with an icon detector
@@ -60,6 +60,14 @@ events in memory only, unless history is on.
   takes over.
 - `search_screen_history` (words, a window filter, a time range) and `screen_at` (the screen at a past time) read
   it. Agents cannot delete it; `python -m ignite_scribe history purge` deletes it all and replaces the key.
+- **Semantic search** (`mode: "semantic"`) finds passages by meaning ("the article about GPU prices"). Each
+  window's text over 5 minutes becomes passages of about 200 tokens, which the recording server embeds in the
+  background with bge-small-en-v1.5 (MIT). Passages are embedded on the iGPU through DirectML, in a worker process
+  at below-normal priority that exits after 60 s idle or when the server goes; queries are embedded on the CPU.
+  The vectors are encrypted like the text, since text can be partly recovered from an embedding.
+  `IGNITE_SCRIBE_EMBED=0` turns it off. Setup: `pip install -e .[embed]`, put `model.onnx` and `tokenizer.json`
+  from `BAAI/bge-small-en-v1.5` (its `onnx/` folder) in `models/embed/bge-small-en-v1.5/`, then
+  `python tools/make_embed_fp16.py` (needs `onnx onnxconverter-common`) for the faster fp16 copy.
 
 **Vision reads pixels, and only when called.**
 - `find_ui_elements` and `ocr_windows` copy the on-screen pixels of the windows they look at, in memory, never
