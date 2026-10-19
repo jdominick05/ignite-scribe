@@ -123,3 +123,14 @@ class Snapshot:
                 out += [f"- [{e.source}, {e.kind} {e.score:.2f}] ({e.rect.left},{e.rect.top})-"
                         f"({e.rect.right},{e.rect.bottom})" for e in w.elements]
         return "\n".join(out) + "\n"
+
+
+def from_dict(d: dict) -> Snapshot:
+    """The inverse of ``Snapshot.to_dict`` (history stores snapshots as dicts)."""
+    def rect(r):
+        return Rect(**r) if r else None
+    ws = [Window(**{**w, "rect": rect(w["rect"]),
+                    "text": [TextBlock(**{**b, "rect": rect(b.get("rect"))}) for b in w.get("text", [])],
+                    "elements": [Element(**{**e, "rect": rect(e["rect"])}) for e in w.get("elements", [])]})
+          for w in d.get("windows", [])]
+    return Snapshot(d["taken_at"], ws, [rect(m) for m in d.get("monitors", [])], list(d.get("sources", [])))

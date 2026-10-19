@@ -10,8 +10,10 @@ Redaction runs on every snapshot before any consumer sees it (MCP, hook, history
 UI Automation's ``IsPassword`` flag is honoured when that source exists (password fields are never read).
 
 The policy file is JSON: ``{"exclude_processes": [...], "exclude_title_patterns": [...], "capture_elevated":
-false}``, merged with the defaults. Patterns are case-insensitive regular expressions. ``capture_elevated`` lets
-the vision stage copy the pixels of elevated windows, which UI Automation cannot read (off by default).
+false, "history": false}``, merged with the defaults. Patterns are case-insensitive regular expressions.
+``capture_elevated`` lets the vision stage copy the pixels of elevated windows, which UI Automation cannot read
+(off by default). ``history`` records the redacted screen to disk, encrypted, for 7 days (off by default;
+``IGNITE_SCRIBE_HISTORY`` overrides it either way).
 """
 from __future__ import annotations
 
@@ -73,6 +75,7 @@ class Policy:
     exclude_processes: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_PROCESSES))
     exclude_title_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_TITLES))
     capture_elevated: bool = False   # may vision copy the pixels of elevated windows (UIA cannot read them)?
+    history: bool = False            # record the redacted events and snapshots to disk (history.py)?
 
     @staticmethod
     def load(path: str | Path | None) -> Policy:
@@ -82,6 +85,7 @@ class Policy:
             p.exclude_processes += [s.lower() for s in d.get("exclude_processes", [])]
             p.exclude_title_patterns += d.get("exclude_title_patterns", [])
             p.capture_elevated = bool(d.get("capture_elevated", False))
+            p.history = bool(d.get("history", False))
         return p
 
     def excluded(self, w: Window) -> bool:

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """python -m ignite_scribe snapshot [--json] [--policy FILE] [--no-text]
 python -m ignite_scribe watch [--seconds N] [--policy FILE] [--raw]
+python -m ignite_scribe history {status,search,purge} [QUERY] [--since 2h]
 python -m ignite_scribe mcp"""
 import argparse
 import json
@@ -22,6 +23,12 @@ def main(argv=None) -> int:
     w.add_argument("--seconds", type=float, default=0, help="stop after this long (0: until Ctrl+C)")
     w.add_argument("--policy", help="policy file (JSON), merged with the defaults")
     w.add_argument("--raw", action="store_true", help="every event, not merged per window per second")
+    h = sub.add_parser("history", help="the opt-in screen history: status, search, or purge (delete it all)")
+    h.add_argument("action", choices=["status", "search", "purge"])
+    h.add_argument("query", nargs="?", default="")
+    h.add_argument("--since", help="ISO 8601 or relative (90m, 2h, 1d)")
+    h.add_argument("--match", help="only windows whose title or process contains this")
+    h.add_argument("--yes", action="store_true", help="purge without asking")
     sub.add_parser("mcp", help="serve the MCP tools on stdio")
     a = ap.parse_args(argv)
     if a.cmd == "mcp":
@@ -30,6 +37,25 @@ def main(argv=None) -> int:
         return 0
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if a.cmd == "history":
+        from .history import History, default_path, parse_time
+        if not default_path().exists():
+            print(f"no history at {default_path()} (it is opt-in: IGNITE_SCRIBE_HISTORY=1)", file=sys.stderr)
+            return 1
+        hist = History()
+        try:
+            if a.action == "status":
+                print(json.dumps(hist.status(), indent=1))
+            elif a.action == "search":
+                print(json.dumps(hist.search(a.query, parse_time(a.since), None, a.match), indent=1,
+                                 ensure_ascii=False))
+            else:
+                if not a.yes and input(f"delete all screen history in {hist.path}? [y/N] ").lower() != "y":
+                    return 1
+                print(f"deleted {hist.purge()} chunks", file=sys.stderr)
+        finally:
+            hist.close()
+        return 0
     from .redact import Policy
     policy = Policy.load(a.policy)
     if a.cmd == "watch":

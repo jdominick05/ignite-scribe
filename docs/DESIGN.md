@@ -41,15 +41,17 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
    - text detection and recognition (OCR): done on the CPU, `ocr_windows` (PP-OCRv5 mobile, four times fewer
      character errors than Windows' built-in OCR). The recognizer moves to the NPU when ignite-xdna's bf16
      datapath can run it (see OCR.md).
-5. **History**: snapshots in SQLite with a retention limit, plus embeddings for "what was on screen when" (batched,
-   since short single embeddings lose to the iGPU on this NPU).
+5. **History** (done, keyword and time; opt-in): the redacted events and periodic redacted snapshots, in SQLite,
+   sealed per chunk with AES-256-GCM under a DPAPI-wrapped key, kept 7 days or 200 MB. Next: embeddings for
+   semantic "what was on screen when" (batched, since short single embeddings lose to the iGPU on this NPU).
 
 ## Consumers
 - **MCP server** (done, stdio): the agent asks only when it needs the screen. Tools:
   - `scribe_status` (with the watcher's state);
   - `get_screen_state`: served from the watcher's state; `refresh` walks afresh;
   - `screen_changes(since)`: events since a sequence number, with `next_since`;
-  - `list_windows`: no content. Planned: `find_on_screen`, `search_screen_history`.
+  - `search_screen_history` and `screen_at` (opt-in history);
+  - `list_windows`: no content. Planned: `find_on_screen`.
 - **Hook** (planned): a short screen summary on each prompt. It is simpler, but it sends screen content with every
   request, so it stays opt-in.
 
@@ -58,8 +60,12 @@ server and the hook will be its clients.
 
 ## Privacy model
 - Local only: nothing is sent anywhere by the engine itself. Consumers decide what leaves the machine.
-- Redaction at the source, before any consumer, history included. It covers excluded processes and title patterns
-  (the window keeps its position, and its title and content are withheld), plus secret-shaped text.
+- Redaction at the source, before any consumer, history included (it stores only redacted state). It covers
+  excluded processes and title patterns (the window keeps its position, and its title and content are withheld),
+  plus secret-shaped text.
+- History is opt-in, sealed per chunk with AES-256-GCM under a key wrapped with DPAPI for the current user, and
+  kept 7 days or 200 MB. Agents can search it but not delete it; the CLI's `history purge` deletes it and replaces
+  the key.
 - Every output carries the untrusted-content note. Screen text is data, never instructions.
 - Pixels are read only by the vision stage, only per call, and never written anywhere.
   - Exclusion is applied before capture: masked areas are never blitted. They cover windows above the target,

@@ -14,7 +14,8 @@ At most every ``interval`` seconds, if anything is dirty, the window list is re-
 windows among the ones worth reading (focused first, then by z, up to ``max_windows``, never an excluded one) are
 walked again; the rest keep their last content. The result is redacted, compared with the previous state
 (``changes.diff``) and the events get increasing sequence numbers in a bounded in-memory ring. Nothing is
-written to disk.
+written to disk, unless a ``recorder`` (``history.History``, opt-in) is given: it then receives each refresh's
+redacted events and redacted snapshot, after redaction, and writes them on its own thread.
 
 Without Desktop Duplication (secure desktop, a full-screen exclusive app, too many duplications), the focused
 window is re-walked every ``fallback_poll`` seconds instead, and ``status()`` says so.
@@ -55,8 +56,9 @@ STRUCTURE = {EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_M
 
 class Watcher:
     def __init__(self, policy: Policy, max_windows: int = 6, interval: float = 0.25, history: int = 2000,
-                 budget: float = 1.5, fallback_poll: float = 2.0, duplication: bool = True):
+                 budget: float = 1.5, fallback_poll: float = 2.0, duplication: bool = True, recorder=None):
         self.policy, self.max_windows, self.interval, self.budget = policy, max_windows, interval, budget
+        self.recorder = recorder
         self.fallback_poll, self.duplication = fallback_poll, duplication
         self.events: collections.deque = collections.deque(maxlen=history)
         self.seq = 0
@@ -190,13 +192,16 @@ class Watcher:
         snap.sources.append(f"watch ({self.dirty_source})")
         red, counts = self.policy.apply(snap)
         with self._lock:
-            for e in diff(self.state, red):
+            new = diff(self.state, red)
+            for e in new:
                 self.seq += 1
                 e["seq"], e["t"] = self.seq, red.taken_at
                 self.events.append(e)
             self.state, self.counts, self.as_of = red, counts, red.taken_at
             self.stats["refreshes"] += 1
             self.stats["refresh_ms_total"] += (time.perf_counter() - t0) * 1000
+        if self.recorder is not None:              # redacted only; the recorder copies nothing raw
+            self.recorder.record([dict(e) for e in new], red)
 
     def _run(self):
         self._wall0 = time.perf_counter()
