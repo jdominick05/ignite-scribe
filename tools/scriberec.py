@@ -93,10 +93,13 @@ def main():
     ap.add_argument("--export", required=True)
     ap.add_argument("--width", type=int, default=320)
     ap.add_argument("--weights")
+    ap.add_argument("--seed", type=int, help="random init seed, so exports at several widths share weights")
     ap.add_argument("--widths", default="32,64,128", help="channels of the three stages")
     ap.add_argument("--blocks", default="1,2,3", help="residual blocks per stage")
     ap.add_argument("--out-ch", type=int, default=128, help="feature channels handed to the CPU tail")
     a = ap.parse_args()
+    if a.seed is not None:
+        torch.manual_seed(a.seed)
     m = ScribeRec(widths=tuple(int(v) for v in a.widths.split(",")),
                   blocks=tuple(int(v) for v in a.blocks.split(",")), out=a.out_ch).eval()
     if a.weights:
@@ -108,7 +111,7 @@ def main():
                       opset_version=17, dynamo=False)
     f = m.backbone(x)
     torch.onnx.export(m.tail, f, out / "tail.onnx", input_names=["features"], output_names=["logprobs"],
-                      opset_version=17, dynamo=False, dynamic_axes={"features": {3: "t"}, "logprobs": {1: "t"}})
+                      opset_version=17, dynamo=False, dynamic_axes={"features": {0: "n", 3: "t"}, "logprobs": {0: "n", 1: "t"}})
     n_bb = sum(p.numel() for p in m.backbone.parameters())
     n_tail = sum(p.numel() for p in m.tail.parameters())
     print(f"backbone {n_bb / 1e6:.2f} M params, {macs(m.backbone, 80, a.width) / 1e6:.0f} M MACs at 80x{a.width}; "

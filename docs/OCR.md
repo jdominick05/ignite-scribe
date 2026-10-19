@@ -199,3 +199,37 @@ frame, 40 frames, on the CPU:
 
 The CER is the same on average (0.0015 both ways). A cached read keeps the first read's result, right or wrong,
 while fresh reads vary from frame to frame, so scrolling text also stops flickering in change events.
+
+## ScribeRec at inference (`scriberec_rec.py`), ready for the trained weights
+
+The worker side follows the training code's input contract exactly (confirmed with the trainer):
+- PIL `BILINEAR` to height 80, `nw = max(1, round(w * 80 / h))`, `/ 255`;
+- right-pad by repeating the last column to `W32 = max(32, ceil(nw / 32) * 32)`, then to the bucket (320, 640,
+  960, 1280: one static backbone each);
+- greedy CTC over the first `W32 / 4` columns only, since bucket padding was never in a training target;
+- lines wider than 1280 after the resize were never trained, so they are cut at the lowest-ink column near each
+  boundary and the pieces joined.
+
+The tail (BiLSTM and CTC head, CPU) runs batched over the lines of one bucket. That is exact, because they share
+its T (0.0 difference measured), and cheaper: 0.34-1.42 ms a line at batch 8 against 0.93-3.61 ms one at a time.
+
+A hand-back directory (`models/scriberec/`: `tail.onnx`, `backbone_<W>[_xint8].onnx`) plus `build/scriberec_<W>.ignite`
+for all four buckets is what always-on waits for. Its readiness check needs every bucket on the NPU, since a CPU
+bucket would make the backend `mixed`, which always-on refuses.
+
+Plumbing checked with random weights (seed 5, SMALL: widths 32/64/96, blocks 1/1/2, 96 out), compiled for all
+four buckets (12 layers each, none on the host), `tools/scriberec_parity.py`, Desktop 2, quiet host, 8 synthetic
+lines per width:
+
+| resized width | bucket | NPU vs XINT8 ONNX, worst | same text | ms per line, NPU / CPU int8 |
+|---:|---:|---:|---:|---|
+| 200 | 320 | 0 steps | 8/8 | 10.7 / 15.1 |
+| 500 | 640 | 0 steps | 8/8 | 11.9 / 21.3 |
+| 800 | 960 | 0 steps | 8/8 | 13.5 / 23.0 |
+| 1150 | 1280 | 0 steps | 8/8 | 20.0 / 36.5 |
+| 1900 | split | 0 steps | 8/8 | 30.1 / 49.3 |
+
+Per line on the NPU path (unbatched tail): prepare 0.78 ms, backbone call 8.3 ms (input write 5.1, dispatch 6.8,
+readback 2.9, summed over pieces), tail 4.5, decode 0.26. The backbone call is mostly host transfer, not compute.
+End to end through the real worker (detector and all four buckets open at once), it replies `ocr_backend: npu`,
+and xrt-smi shows no contexts after `close()`.

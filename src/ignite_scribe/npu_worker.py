@@ -124,6 +124,10 @@ def main(argv=None) -> int:
     ap.add_argument("--ocr-det", help="text detector ONNX (ppocrv5_mobile_det)")
     ap.add_argument("--ocr-rec", help="text-line recognizer ONNX (en_ppocrv5_rec, dynamic width)")
     ap.add_argument("--ocr-dict", help="the recognizer's character list")
+    ap.add_argument("--ocr-rec-model", help="a ScribeRec model directory (tail.onnx, backbone_<W>[_xint8].onnx); "
+                                            "used instead of --ocr-rec when given")
+    ap.add_argument("--ocr-rec-container", action="append", default=[], metavar="W=PATH",
+                    help="a ScribeRec NPU build for bucket width W (repeatable)")
     a = ap.parse_args(argv)
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     sys.stdout = sys.stderr                      # nothing but frames may reach the real stdout
@@ -144,10 +148,16 @@ def main(argv=None) -> int:
             if op == "ocr":
                 try:
                     if ocr_pipe is None:
-                        if not (a.ocr_det and a.ocr_rec and a.ocr_dict):
+                        if not (a.ocr_det and (a.ocr_rec or a.ocr_rec_model) and a.ocr_dict):
                             raise RuntimeError("the worker was started without OCR models")
                         from .ocr_pipeline import OcrPipeline
-                        ocr_pipe = OcrPipeline(a.ocr_det, a.ocr_rec, a.ocr_dict)
+                        rec = None
+                        if a.ocr_rec_model:
+                            from .scriberec_rec import ScribeRec
+                            cont = {} if a.backend == "cpu" else {
+                                int(w): p for w, p in (c.split("=", 1) for c in a.ocr_rec_container)}
+                            rec = ScribeRec(a.ocr_rec_model, a.ocr_dict, cont)
+                        ocr_pipe = OcrPipeline(a.ocr_det, a.ocr_rec, a.ocr_dict, recognizer=rec)
                     out, off = [], 0
                     for hh, ww in h["shapes"]:
                         n = int(hh) * int(ww) * 3
@@ -156,7 +166,7 @@ def main(argv=None) -> int:
                         lines = ocr_pipe(img)
                         out.append(dict(lines=[dict(box=list(map(int, l.box)), text=l.text, score=round(l.score, 4))
                                                for l in lines], **ocr_pipe.last))
-                    write_frame(stdout, dict(ok=True, ocr_backend="cpu", images=out))
+                    write_frame(stdout, dict(ok=True, ocr_backend=ocr_pipe.rec_backend, images=out))
                 except Exception as e:  # noqa: BLE001
                     write_frame(stdout, dict(ok=False, error=f"{type(e).__name__}: {e}"))
                 continue
@@ -177,6 +187,8 @@ def main(argv=None) -> int:
             except Exception as e:  # noqa: BLE001 - one bad request must not kill the worker
                 write_frame(stdout, dict(ok=False, error=f"{type(e).__name__}: {e}"))
     finally:
+        if ocr_pipe is not None:
+            ocr_pipe.close()                     # ScribeRec's NPU sessions, on every stop path
         backend.close()
     return 0
 

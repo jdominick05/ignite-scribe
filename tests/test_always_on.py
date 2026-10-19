@@ -189,3 +189,20 @@ def test_per_call_vision_refuses_during_a_quiet_request(monkeypatch, tmp_path):
     s = Server(source=lambda **k: Snapshot(time.time(), [win(1, "x", "x.exe")]), policy=Policy())
     with pytest.raises(RuntimeError, match="reserved for a measurement"):
         s._vision_snapshot(lambda: (True, ""))
+
+
+def test_ready_needs_the_model_and_every_bucket_on_the_npu(tmp_path, monkeypatch):
+    monkeypatch.delenv("IGNITE_SCRIBE_ALWAYS_ON_CPU", raising=False)
+    model, build = tmp_path / "model", tmp_path / "build"
+    model.mkdir()
+    build.mkdir()
+    monkeypatch.setenv("IGNITE_SCRIBE_OCR_REC_MODEL", str(model))
+    monkeypatch.setenv("IGNITE_SCRIBE_OCR_REC_CONTAINERS", str(build))
+    assert A.npu_recognizer_ready()[0] is False                  # no model
+    (model / "tail.onnx").write_bytes(b"")
+    for w in (320, 640, 960):
+        (build / f"scriberec_{w}.ignite").write_bytes(b"")
+    ok, why = A.npu_recognizer_ready()
+    assert ok is False and "scriberec_1280" in why               # one bucket would fall back to the CPU
+    (build / "scriberec_1280.ignite").write_bytes(b"")
+    assert A.npu_recognizer_ready() == (True, "")

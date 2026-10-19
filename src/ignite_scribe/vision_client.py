@@ -45,7 +45,20 @@ def config() -> dict:
                 backend=env("IGNITE_SCRIBE_VISION_BACKEND", "auto"),
                 ocr_det=str(ocr_dir / "ppocrv5_mobile_det.onnx"), ocr_rec=str(ocr_dir / "en_ppocrv5_rec.onnx"),
                 ocr_dict=str(ocr_dir / "dict.txt"),
-                ocr_rec_container=env("IGNITE_SCRIBE_OCR_REC_CONTAINER", str(ROOT / "build" / "scriberec.ignite")))
+                ocr_rec_model=env("IGNITE_SCRIBE_OCR_REC_MODEL", str(ROOT / "models" / "scriberec")),
+                ocr_rec_containers=env("IGNITE_SCRIBE_OCR_REC_CONTAINERS", str(ROOT / "build")))
+
+
+def rec_containers(cfg: dict | None = None) -> dict[int, str]:
+    """-> {bucket width: path} of the ScribeRec NPU builds present (``scriberec_<W>.ignite``). Files only."""
+    cfg = cfg or config()
+    d = Path(cfg.get("ocr_rec_containers", ""))
+    out = {}
+    for w in (320, 640, 960, 1280):
+        p = d / f"scriberec_{w}.ignite"
+        if p.is_file():
+            out[w] = str(p)
+    return out
 
 
 def ocr_available(cfg: dict | None = None) -> tuple[bool, str]:
@@ -93,6 +106,9 @@ class VisionWorker:
                    PYTHONIOENCODING="utf-8")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         ocr = [f"--ocr-{k}={c['ocr_' + k]}" for k in ("det", "rec", "dict") if Path(c.get("ocr_" + k, "")).is_file()]
+        if (Path(c.get("ocr_rec_model", "")) / "tail.onnx").is_file():
+            ocr.append(f"--ocr-rec-model={c['ocr_rec_model']}")
+            ocr += [f"--ocr-rec-container={w}={p}" for w, p in rec_containers(c).items()]
         self.proc = subprocess.Popen([c["python"], "-m", "ignite_scribe.npu_worker", "--container", c["container"],
                                       "--onnx", c["onnx"], "--backend", c["backend"], *ocr],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

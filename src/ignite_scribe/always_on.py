@@ -99,9 +99,13 @@ def npu_recognizer_ready() -> tuple[bool, str]:
     if cpu_allowed():
         return True, ""
     from . import vision_client
-    p = Path(vision_client.config().get("ocr_rec_container", ""))
-    if not p.is_file():
-        return False, f"the OCR recognizer is not on the NPU yet (no {p.name}; docs/OCR.md)"
+    cfg = vision_client.config()
+    if not (Path(cfg.get("ocr_rec_model", "")) / "tail.onnx").is_file():
+        return False, "the NPU recognizer (ScribeRec) is not installed (docs/OCR.md)"
+    have = vision_client.rec_containers(cfg)
+    missing = [w for w in (320, 640, 960, 1280) if w not in have]
+    if missing:
+        return False, f"the OCR recognizer is not on the NPU yet (no scriberec_{missing[0]}.ignite; docs/OCR.md)"
     return True, ""
 
 
