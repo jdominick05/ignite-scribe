@@ -262,3 +262,29 @@ A failed bucket open (device held) closes the buckets already open, and the reco
 
 End to end through the real worker (detector and all four buckets open at once), it replies `ocr_backend: npu`,
 and xrt-smi shows no contexts after `close()`.
+
+## ScribeRec release-01 (trained)
+
+Trained by Model Work on Desktop 1. The training text was public domain only (PG19, SQLite source, and the line
+generators). Checkpoint: the last step (26000) of the cosine schedule, not chosen by eval. The hand-back is in
+`ignite-xdna/models/scriberec/release-01/`, and the SHA-256 of each `.onnx` was checked on arrival.
+
+On the same 500 seed-100 lines as the table above, rendered on Desktop 2, through the shipped inference path
+(`tools/scriberec_eval.py`, CPU, batch 8):
+
+| recognizer | CER | exact lines | ms per line (CPU) |
+|---|---:|---:|---:|
+| ScribeRec release-01, XINT8 backbones | **0.00199** | **96.6 %** | 17.2 |
+| ScribeRec release-01, float backbones | 0.00199 | 96.6 % | 13.7 |
+| PP-OCRv5 float, own width (above) | 0.0049 | 91.8 % | 6.59 |
+
+- Quantization costs nothing here: XINT8 and float give the same output.
+- The 494 lines up to 1280 px after resize: 20 edits, CER 0.00186.
+- The 6 wider lines, split for want of a trained width: 2 edits, CER 0.0068.
+- The trainer's own eval says 0.00181 / 97.0%. It may have rendered its seed 100 on Desktop 1, where ClearType
+  output differs. That question is open.
+- Release-01 sometimes reads a Latin capital as its Greek twin, for example Chi for X. `scriberec_rec`
+  maps the 14 twins back (`latin_twins`, on by default) until a fine-tune fixes it. No seed-100 label
+  contains Greek.
+- Lines are synthetic, so these are not real-world figures. The NPU run of the same check waits on the device
+  fault of 2026-10-19 (contexts refused with 0xc01e0009), and so do the four compiled buckets.

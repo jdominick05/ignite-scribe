@@ -165,3 +165,7 @@ def test_pipeline_close_closes_the_recognizer():
     p.recognizer = types.SimpleNamespace(close=lambda: closed.append(1))
     p.close()
     assert closed == [1]
+
+
+def test_greek_twins_of_latin_capitals_are_mapped_back():
+    assert "Χ-ray ΟΚ Δ".translate(R.LATIN_TWINS) == "X-ray OK Δ"   # Delta has no twin

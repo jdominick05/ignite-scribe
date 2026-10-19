@@ -28,6 +28,10 @@ from . import ocr
 
 BUCKETS = (320, 640, 960, 1280)
 H = 80
+# release-01 sometimes reads a Latin capital as its Greek twin (its symbol generator drew both from the same
+# glyphs); screen text here is English, so the twins are mapped back until a fine-tune fixes it.
+LATIN_TWINS = str.maketrans("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ",
+                            "ABEZHIKMNOPTYX")
 
 
 def prepare(rgb: np.ndarray) -> tuple[np.ndarray, int]:
@@ -63,7 +67,8 @@ def split_points(x: np.ndarray, limit: int = BUCKETS[-1], window: int = 160) -> 
 
 class ScribeRec:
     def __init__(self, model_dir: str | Path, dict_path: str | Path, containers: dict[int, str] | None = None,
-                 threads: int = 4, prefer_int8: bool = True, require_npu: bool = False):
+                 threads: int = 4, prefer_int8: bool = True, require_npu: bool = False,
+                 latin_twins: bool = True):
         """``containers``: {bucket width: .ignite path} for the NPU; missing buckets run on ONNX Runtime (the XINT8
         backbone when present, as it matches the NPU's arithmetic, else the float one). If any NPU bucket fails to
         open, the ones already open are closed and every bucket runs on the CPU (``npu_error`` says why), or
@@ -79,6 +84,7 @@ class ScribeRec:
         self.where: dict[int, str] = {}
         self._npu = []
         self.npu_error = None
+        self.latin_twins = latin_twins
         npu = {w: c for w, c in (containers or {}).items() if w in BUCKETS and Path(c).is_file()}
         try:                                          # all NPU buckets open, or none stays open
             for w, c in sorted(npu.items()):
@@ -110,6 +116,9 @@ class ScribeRec:
             raise FileNotFoundError(f"no ScribeRec backbone in {d}")
         self.ms = dict(prepare=0.0, backbone=0.0, tail=0.0, decode=0.0, lines=0)   # where the time goes
         self.npu_ms: dict[str, float] = {}        # DenseTensorSession's own split of the backbone call
+
+    def _post(self, text: str) -> str:
+        return text.translate(LATIN_TWINS) if self.latin_twins else text
 
     def _npu_run(self, s, x):
         y, st = s.run(x)
@@ -189,7 +198,7 @@ class ScribeRec:
         for (i, _, gap), (t, p) in zip(pieces, decoded):
             texts[i].append(t + (" " if gap and t and not t.endswith(" ") else ""))
             scores[i].append(p)
-        return [("".join(t).strip(), float(np.mean(s))) for t, s in zip(texts, scores)]
+        return [(self._post("".join(t).strip()), float(np.mean(s))) for t, s in zip(texts, scores)]
 
     def close(self):
         for s in self._npu:
