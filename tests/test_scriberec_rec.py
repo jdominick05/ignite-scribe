@@ -173,11 +173,11 @@ def test_greek_twins_of_latin_capitals_are_mapped_back():
 
 def test_split_cuts_in_the_widest_blank_run_and_spaces_only_word_gaps():
     x = np.ones((80, 1500, 3), np.float32)
-    x[20:60] = 0.0                                             # ink everywhere ...
+    x[30:50] = 0.0                                             # ink everywhere (a quarter of the rows) ...
     x[:, 1100:1104] = 1.0                                      # ... but a letter gap (4 columns)
     x[:, 1200:1220] = 1.0                                      # ... and a word gap (20 columns)
     (s0, c, gap), (s1, e, last) = R.split_points(x)
     assert (s0, s1, e) == (0, c, 1500) and 1200 <= c < 1220 and gap is True and last is False
-    x[:, 1200:1220] = 0.0                                      # only the letter gap is left
+    x[30:50, 1200:1220] = 0.0                                  # only the letter gap is left
     (_, c, gap), _ = R.split_points(x)
     assert 1100 <= c < 1104 and gap is False                    # cut there, but join without a space
