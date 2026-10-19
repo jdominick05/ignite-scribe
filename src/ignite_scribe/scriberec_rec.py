@@ -50,16 +50,36 @@ def pad_to(x: np.ndarray, width: int) -> np.ndarray:
     return np.concatenate([x, np.repeat(x[:, -1:], width - x.shape[1], axis=1)], axis=1)
 
 
-def split_points(x: np.ndarray, limit: int = BUCKETS[-1], window: int = 160) -> list[tuple[int, int, bool]]:
-    """Pieces of at most ``limit`` columns -> [(start, end, cut_in_a_gap)], cut at the lowest-ink column found in
-    the ``window`` before each boundary. Ink is the distance from the median (background) colour."""
+def split_points(x: np.ndarray, limit: int = BUCKETS[-1], window: int = 320,
+                 word_gap: float = 0.1) -> list[tuple[int, int, bool]]:
+    """Pieces of at most ``limit`` columns -> [(start, end, cut_at_a_word_gap)].
+
+    Each cut falls in the ``window`` before the boundary, in the middle of its widest run of blank columns (ink
+    is the distance from the median, background, colour). A run at least ``word_gap`` x the line height wide is a
+    word gap, and the pieces are joined with a space. A narrower run is a gap between letters, joined without one.
+    With no blank column, the lowest-ink column is cut."""
     bg = np.median(x.reshape(-1, 3), axis=0)
     ink = np.abs(x - bg).max(axis=2).sum(axis=0)
+    min_run = max(2, int(round(word_gap * x.shape[0])))
     out, s = [], 0
     while x.shape[1] - s > limit:
-        lo = max(s + 1, s + limit - window)
-        c = lo + int(np.argmin(ink[lo:s + limit]))
-        out.append((s, c, bool(ink[c] < 1e-3)))
+        lo, hi = max(s + 1, s + limit - window), s + limit
+        blank = ink[lo:hi] < 1e-3
+        best, run, start = (0, 0), 0, 0
+        for i, v in enumerate(blank):
+            if v:
+                if run == 0:
+                    start = i
+                run += 1
+                if run > best[0]:
+                    best = (run, start)
+            else:
+                run = 0
+        if best[0]:
+            c, gap = lo + best[1] + best[0] // 2, best[0] >= min_run
+        else:
+            c, gap = lo + int(np.argmin(ink[lo:hi])), False
+        out.append((s, c, gap))
         s = c
     out.append((s, x.shape[1], False))
     return out

@@ -274,15 +274,18 @@ On the same 500 seed-100 lines as the table above, rendered on Desktop 2, throug
 
 | recognizer | CER | exact lines | ms per line (CPU) |
 |---|---:|---:|---:|
-| ScribeRec release-01, XINT8 backbones | **0.00199** | **96.6 %** | 17.2 |
-| ScribeRec release-01, float backbones | 0.00199 | 96.6 % | 13.7 |
+| ScribeRec release-01, XINT8 backbones | **0.00181** | **97.0 %** | 18.4 |
+| ScribeRec release-01, float backbones (before the split fix) | 0.00199 | 96.6 % | 13.7 |
 | PP-OCRv5 float, own width (above) | 0.0049 | 91.8 % | 6.59 |
 
 - Quantization costs nothing here: XINT8 and float give the same output.
-- The 494 lines up to 1280 px after resize: 20 edits, CER 0.00186.
-- The 6 wider lines, split for want of a trained width: 2 edits, CER 0.0068.
-- The trainer's own eval says 0.00181 / 97.0%. It may have rendered its seed 100 on Desktop 1, where ClearType
-  output differs. That question is open.
+- The 494 lines up to 1280 px after resize: 20 edits, CER 0.00186. The trainer, rendering seed 100 on
+  Desktop 1, got the same 20 edits, so the two machines' ClearType output agrees.
+- The 6 wider lines are split, since no trained width fits them. The first split cut at the lowest-ink column,
+  and twice that fell between two letters and was joined with a space: 2 edits, both an extra space. It now
+  cuts in the middle of the widest blank run within 320 px of the boundary, and adds a space only for a run at
+  least 0.1 x the line height wide. Result: 0 edits, the same as the trainer decoding them whole at 1600 wide.
+  That brings the total to the trainer's 0.00181 / 97.0%.
 - Release-01 sometimes reads a Latin capital as its Greek twin, for example Chi for X. `scriberec_rec`
   maps the 14 twins back (`latin_twins`, on by default) until a fine-tune fixes it. No seed-100 label
   contains Greek.
