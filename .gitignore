@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+
+# local data: snapshots, history, captures, policy files with personal entries
+data/
+*.sqlite
+*.db
+captures/
+policy.local.json
+
+# AI-assistant tooling stays local (never committed)
+CLAUDE.md
+.claude/
+*handoff*.md
+AGENTS.md
+QWEN.md
+GEMINI.md
+.mcp.json

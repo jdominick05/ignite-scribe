@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ignite-scribe"
+version = "0.0.1"
+description = "The desktop screen as state any agent can read: Win32 + UI Automation first, NPU vision for the pixels."
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.11"
+dependencies = []   # the window source and the MCP server are ctypes / stdlib only
+
+[project.optional-dependencies]
+uia = ["comtypes>=1.4.17"]   # UI Automation (UIAutomationCore through COM)
+test = ["pytest>=8"]
+
+[project.scripts]
+ignite-scribe = "ignite_scribe.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
