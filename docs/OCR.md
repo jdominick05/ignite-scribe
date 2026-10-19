@@ -141,3 +141,29 @@ The CPU tail takes 0.96-1.07 ms with 4 threads (ORT, 100 runs). A line therefore
 2.6 ms (big), against about 6.3 ms for PP-OCRv5 on the CPU. Accuracy is unknown until it is trained. Training
 runs on Desktop 1's 7900 XTX (the "Model Work" session). The trained model's recipe goes to ignite-xdna, which
 compiles and verifies it.
+
+## Always-on OCR: what one read costs (2026-10-19, Desktop 2)
+`tools/region_cost.py` uses synthetic pages (GDI lines, nothing from the screen) cropped to the sizes a changed
+region takes. The pipeline is PP-OCRv5 on the CPU, 4 threads; values are medians of 15 crops, on a quiet host.
+
+| changed region | detect | recognize | lines |
+|---|---:|---:|---:|
+| 1000x60 (a log line) | 6.2 ms | 4.6 ms | 1 |
+| 1000x120 | 13.6 ms | 12.0 ms | 2 |
+| 1000x250 | 23.6 ms | 31.2 ms | 4 |
+| 1280x400 | 49.1 ms | 59.7 ms | 9 |
+| 1000x700 (a whole window) | 74.5 ms | 82.5 ms | 12 |
+| 1920x1040 (the whole screen) | 263 ms | 214 ms | 28 |
+
+What follows from the table (DERIVED):
+- A log or chat window adding a line or two, read every 2 s, costs about 7 ms of detection a read, under 1% of a
+  core, so the CPU detector is acceptable there.
+- A window that repaints entirely (video, a game) costs 75-263 ms of detection a read. At one read per 2 s that is
+  4-13% of the 4 threads, and the per-minute budget caps it.
+- The recognizer's share moves to the NPU with ScribeRec.
+
+A detector shaped for the engine is worth training only if full-window repaints turn out to be common.
+
+The live run on the real desktop read nothing in 5 minutes: both windows were described by UI Automation. A
+synthetic canvas window (`tools/canvas_window.py`) opened behind the focused window, 100% covered, so its
+masked capture read nothing too, which is the masking working as intended.
