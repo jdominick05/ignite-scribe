@@ -223,13 +223,42 @@ lines per width:
 
 | resized width | bucket | NPU vs XINT8 ONNX, worst | same text | ms per line, NPU / CPU int8 |
 |---:|---:|---:|---:|---|
-| 200 | 320 | 0 steps | 8/8 | 10.7 / 15.1 |
-| 500 | 640 | 0 steps | 8/8 | 11.9 / 21.3 |
-| 800 | 960 | 0 steps | 8/8 | 13.5 / 23.0 |
-| 1150 | 1280 | 0 steps | 8/8 | 20.0 / 36.5 |
-| 1900 | split | 0 steps | 8/8 | 30.1 / 49.3 |
+| 200 | 320 | 0 steps | 8/8 | 12.3 / 18.5 |
+| 500 | 640 | 0 steps | 8/8 | 14.1 / 22.4 |
+| 800 | 960 | 0 steps | 8/8 | 15.9 / 28.2 |
+| 1150 | 1280 | 0 steps | 8/8 | 23.8 / 41.2 |
+| 1900 | split | 0 steps | 8/8 | 34.3 / 60.0 |
 
-Per line on the NPU path (unbatched tail): prepare 0.78 ms, backbone call 8.3 ms (input write 5.1, dispatch 6.8,
-readback 2.9, summed over pieces), tail 4.5, decode 0.26. The backbone call is mostly host transfer, not compute.
+Per line on the NPU path, one line per call:
+
+| stage | ms |
+|---|---:|
+| prepare | 0.89 |
+| backbone call, total | 9.6 |
+| of which input quantize and write | 6.2 |
+| of which dispatch | 6.8 |
+| of which readback | 2.9 |
+| tail | 5.3 |
+| decode | 0.36 |
+
+The backbone figures are summed over pieces. An earlier run of the same check, before `read_many`, was about 15% faster throughout.
+
+**Where this stands against PP-OCRv5 on the CPU.** On one 1000x700 synthetic page, about 20 boxes, the NPU path spent 220-237 ms recognizing against PP-OCRv5's 150 ms. It is not faster per line yet, and it still costs CPU per line: about 6 ms to quantize and write the input, and 5 ms of tail. What it changes is where the work runs, which is what always-on needs. Three things should cut the host share before always-on ships, each to be measured on the trained model:
+- the line cache;
+- the batched tail;
+- handing PIL's uint8 straight to the container. This works only if its input scale is 1/255 with zero point 0, and must be checked bit-equal first.
+
+**Stop paths:** `tools/worker_lifecycle.py --ocr`, with the four bucket sessions open next to the detector:
+
+| stop path | NPU idle after |
+|---|---:|
+| `close()` | 0.08 s |
+| idle stop (3 s idle) | 0.07 s |
+| parent killed | 0.06 s |
+
+A failed bucket open (device held) closes the buckets already open, and the recognizer falls back to the CPU, reporting `ocr_reason`. With `--backend npu` it raises instead. Always-on refuses either way, since the backend is not `npu`.
+
+**Installing the trained model:** copy the hand-back directory (`ignite-xdna/models/scriberec/<run>/`) to `models/scriberec/`, or point `IGNITE_SCRIBE_OCR_REC_MODEL` at it. Put the four compiled buckets at `build/scriberec_{320,640,960,1280}.ignite` (or set `IGNITE_SCRIBE_OCR_REC_CONTAINERS`).
+
 End to end through the real worker (detector and all four buckets open at once), it replies `ocr_backend: npu`,
 and xrt-smi shows no contexts after `close()`.

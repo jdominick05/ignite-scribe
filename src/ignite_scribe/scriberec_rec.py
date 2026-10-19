@@ -63,9 +63,11 @@ def split_points(x: np.ndarray, limit: int = BUCKETS[-1], window: int = 160) -> 
 
 class ScribeRec:
     def __init__(self, model_dir: str | Path, dict_path: str | Path, containers: dict[int, str] | None = None,
-                 threads: int = 4, prefer_int8: bool = True):
+                 threads: int = 4, prefer_int8: bool = True, require_npu: bool = False):
         """``containers``: {bucket width: .ignite path} for the NPU; missing buckets run on ONNX Runtime (the XINT8
-        backbone when present, as it matches the NPU's arithmetic, else the float one)."""
+        backbone when present, as it matches the NPU's arithmetic, else the float one). If any NPU bucket fails to
+        open, the ones already open are closed and every bucket runs on the CPU (``npu_error`` says why), or
+        the error is raised with ``require_npu``."""
         import onnxruntime as ort
         d = Path(model_dir)
         o = ort.SessionOptions()
@@ -76,13 +78,23 @@ class ScribeRec:
         self.backbones: dict[int, object] = {}
         self.where: dict[int, str] = {}
         self._npu = []
-        for w in BUCKETS:
-            c = (containers or {}).get(w)
-            if c and Path(c).is_file():
+        self.npu_error = None
+        npu = {w: c for w, c in (containers or {}).items() if w in BUCKETS and Path(c).is_file()}
+        try:                                          # all NPU buckets open, or none stays open
+            for w, c in sorted(npu.items()):
                 from ignite_xdna.runtime.dense_session import DenseTensorSession
                 s = DenseTensorSession(c)
                 self._npu.append(s)
                 self.backbones[w], self.where[w] = (lambda x, s=s: self._npu_run(s, x)), "npu"
+        except Exception as e:  # noqa: BLE001 - e.g. the device is held by another session
+            self.close()
+            self.backbones.clear()
+            self.where.clear()
+            if require_npu:
+                raise
+            self.npu_error = f"{type(e).__name__}: {e}"   # every bucket on the CPU; backend reports cpu
+        for w in BUCKETS:
+            if w in self.backbones:
                 continue
             names = ([f"backbone_{w}_xint8.onnx"] if prefer_int8 else []) + [f"backbone_{w}.onnx"]
             if w == 320:

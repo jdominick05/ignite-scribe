@@ -147,7 +147,9 @@ class OcrPipeline:
                 hits += 1
             else:
                 misses.append(i)
-        if self.recognizer is not None:
+        if not misses:
+            reads = []
+        elif self.recognizer is not None:
             reads = self.recognizer.read_many([rgb[boxes[i][1]:boxes[i][3], boxes[i][0]:boxes[i][2]] for i in misses])
         else:
             reads = [self.read(bgr[boxes[i][1]:boxes[i][3], boxes[i][0]:boxes[i][2]]) for i in misses]

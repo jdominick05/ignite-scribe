@@ -156,7 +156,7 @@ def main(argv=None) -> int:
                             from .scriberec_rec import ScribeRec
                             cont = {} if a.backend == "cpu" else {
                                 int(w): p for w, p in (c.split("=", 1) for c in a.ocr_rec_container)}
-                            rec = ScribeRec(a.ocr_rec_model, a.ocr_dict, cont)
+                            rec = ScribeRec(a.ocr_rec_model, a.ocr_dict, cont, require_npu=a.backend == "npu")
                         ocr_pipe = OcrPipeline(a.ocr_det, a.ocr_rec, a.ocr_dict, recognizer=rec)
                     out, off = [], 0
                     for hh, ww in h["shapes"]:
@@ -166,7 +166,8 @@ def main(argv=None) -> int:
                         lines = ocr_pipe(img)
                         out.append(dict(lines=[dict(box=list(map(int, l.box)), text=l.text, score=round(l.score, 4))
                                                for l in lines], **ocr_pipe.last))
-                    write_frame(stdout, dict(ok=True, ocr_backend=ocr_pipe.rec_backend, images=out))
+                    write_frame(stdout, dict(ok=True, ocr_backend=ocr_pipe.rec_backend, images=out,
+                                             ocr_reason=getattr(ocr_pipe.recognizer, "npu_error", None)))
                 except Exception as e:  # noqa: BLE001
                     write_frame(stdout, dict(ok=False, error=f"{type(e).__name__}: {e}"))
                 continue

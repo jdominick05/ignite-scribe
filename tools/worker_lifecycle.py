@@ -7,7 +7,8 @@
 2. ``close()``: the NPU must show no hardware context while this process is still alive;
 3. idle stop: a worker with ``idle=3`` must exit by itself and release the NPU;
 4. parent death: a child process starts a worker and is killed; the worker must exit and release the NPU.
-Reads ``xrt-smi examine -r aie-partitions``. Prints one JSON line per step and exits non-zero on a failure.
+With ``--ocr``, every worker also reads one synthetic text page, so the OCR recognizer's NPU sessions (ScribeRec:
+one per width bucket) are open on each stop path too. Reads ``xrt-smi examine -r aie-partitions``. Prints one JSON line per step and exits non-zero on a failure.
 """
 import argparse
 import json
@@ -35,11 +36,24 @@ def wait_idle(timeout=15.0) -> float | None:
     return None
 
 
-def child():
-    from ignite_scribe.vision_client import VisionWorker
+def page():
+    import random
+    sys.path.insert(0, str(ROOT / "tools"))
+    from ocr_page_eval import page as make
+    return make(random.Random(91), 1000, 700)[0]
+
+
+def use(w, ocr: bool):
+    """Open the worker's NPU sessions: the detector, and with ``ocr`` the recognizer. -> the OCR backend or None."""
     import numpy as np
-    w = VisionWorker(idle=600)
     w.detect([np.full((640, 640, 3), 114, np.uint8)])
+    return w.ocr([page()]).get("ocr_backend") if ocr else None
+
+
+def child(ocr: bool):
+    from ignite_scribe.vision_client import VisionWorker
+    w = VisionWorker(idle=600)
+    use(w, ocr)
     print(w.proc.pid, flush=True)
     time.sleep(600)
 
@@ -48,9 +62,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tiles", type=int, default=16)
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--ocr", action="store_true", help="also open the OCR recognizer's NPU sessions")
     a = ap.parse_args()
     if a.child:
-        return child()
+        return child(a.ocr)
     import numpy as np
     from ignite_scribe.vision_client import VisionWorker, available
     ok, why = available()
@@ -74,13 +89,17 @@ def main():
                           npu_ms_median=ms[len(ms) // 2], npu_ms_min=ms[0], npu_ms_max=ms[-1],
                           context_while_running=contexts())), flush=True)
     fails += r["backend"] != "npu"
+    if a.ocr:
+        ob = use(w, True)
+        print(json.dumps(dict(step="ocr", ocr_backend=ob, context_while_running=contexts())), flush=True)
+        fails += ob != "npu"
     w.close()
     t_idle = wait_idle()
     print(json.dumps(dict(step="close", worker_exited=w.proc is None, npu_idle_after_s=t_idle)), flush=True)
     fails += t_idle is None
 
     w2 = VisionWorker(idle=3)
-    w2.detect(batch[:1])
+    use(w2, a.ocr)
     t0 = time.monotonic()
     while w2.running and time.monotonic() - t0 < 15:
         time.sleep(0.25)
@@ -89,7 +108,8 @@ def main():
                           npu_idle_after_s=t_idle)), flush=True)
     fails += w2.running or t_idle is None
 
-    c = subprocess.Popen([sys.executable, __file__, "--child"], stdout=subprocess.PIPE, text=True)
+    c = subprocess.Popen([sys.executable, __file__, "--child"] + (["--ocr"] if a.ocr else []),
+                         stdout=subprocess.PIPE, text=True)
     wpid = int(c.stdout.readline())
     held = contexts()
     c.kill()
