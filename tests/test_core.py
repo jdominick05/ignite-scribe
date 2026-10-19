@@ -112,7 +112,8 @@ def test_missing_uia_degrades_to_windows_only(monkeypatch):
 
 @pytest.fixture
 def native_window():
-    texts = dict(title="scribe uia probe", label="Probe label 7Q", plain="plain value 3K", secret="hunter2-Zx9-secret")
+    texts = dict(title="scribe uia probe", label="Probe label 7Q", plain="plain value 3K", secret="hunter2-Zx9-secret",
+                 lines="first line 4R|second line 8W||fourth line 2P")
     proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name("password_window.py")), *texts.values()],
                             stdout=subprocess.PIPE, text=True)
     try:
@@ -134,6 +135,8 @@ def test_uia_reads_text_but_never_a_password(native_window):
     assert "[password field]" in dump
     assert t["secret"] not in dump and "hunter2" not in dump
     assert any(b.role == "Edit" for b in blocks)
+    multi = [b for b in blocks if "first line 4R" in b.text]
+    assert len(multi) == 1 and multi[0].text.endswith("first line 4R\nsecond line 8W\n\nfourth line 2P"), multi
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="UI Automation")
@@ -152,10 +155,11 @@ def test_uia_skips_the_window_when_policy_excludes_its_title(native_window, monk
 
 
 class FakeElement:
-    """Stands in for a cached UIA element whose Value would leak if it were ever requested."""
-    def __init__(self, password, name="Field", value="hunter2-Zx9-secret"):
+    """Stands in for a cached UIA element whose Value and Text pattern would leak if they were ever requested."""
+    def __init__(self, password, name="Field", value="hunter2-Zx9-secret", text=None):
         self.CachedIsPassword, self.CachedName, self.CachedControlType = password, name, 50004
         self.value, self.value_requests = value, 0
+        self.text, self.pattern_requests = text, 0
 
     @property
     def CachedBoundingRectangle(self):
@@ -163,7 +167,16 @@ class FakeElement:
         return SimpleNamespace(left=0, top=0, right=10, bottom=10)
 
     def GetCachedPropertyValue(self, pid):
-        return True                      # IsValuePatternAvailable
+        from ignite_scribe import uia
+        return {uia.IS_VALUE_AVAILABLE: self.value is not None, uia.IS_TEXT_AVAILABLE: self.text is not None}[pid]
+
+    def GetCurrentPattern(self, pid):
+        from types import SimpleNamespace
+        self.pattern_requests += 1
+        rng = SimpleNamespace(GetText=lambda n: self.text)
+        ranges = SimpleNamespace(Length=1, GetElement=lambda i: rng)
+        tp = SimpleNamespace(GetVisibleRanges=lambda: ranges)
+        return SimpleNamespace(QueryInterface=lambda iface: tp)
 
     def GetCurrentPropertyValue(self, pid):
         self.value_requests += 1
@@ -174,8 +187,35 @@ def test_password_value_is_never_requested():
     """The live test cannot show this: Windows itself returns '' for a password Edit's Value. Here the provider
     would hand the secret over, so only ignite-scribe's own guard keeps it out."""
     from ignite_scribe import uia
-    pw, plain = FakeElement(True), FakeElement(False, value="plain value")
-    b, role = uia._block(pw)
-    assert b.text == "[password field]" and role == "Edit" and pw.value_requests == 0
-    b, _ = uia._block(plain)
+    uia._UIA = uia._UIA or type("UIA", (), {"IUIAutomationTextPattern": None})
+    pw = FakeElement(True, text="hunter2-Zx9-secret")
+    plain = FakeElement(False, value="plain value")
+    b, role, covered = uia._block(pw)
+    assert b.text == "[password field]" and role == "Edit" and not covered
+    assert pw.value_requests == 0 and pw.pattern_requests == 0
+    b, _, _ = uia._block(plain)
     assert b.text == "Field: plain value" and plain.value_requests == 1
+
+
+def test_text_pattern_multiline_covers_subtree_and_drops_repeats():
+    from ignite_scribe import uia
+    uia._UIA = uia._UIA or type("UIA", (), {"IUIAutomationTextPattern": None})
+    term = FakeElement(False, name="Shell", value=None, text="PS> dir   \r\n\r\n\r\n\r\nfile.txt    \r\n      ")
+    b, _, covered = uia._block(term)
+    assert b.text == "Shell\nPS> dir\n\nfile.txt" and covered and term.pattern_requests == 1
+    same = FakeElement(False, name="Address", value="C:\\data", text="C:\\data")
+    b, _, covered = uia._block(same)
+    assert b.text == "Address: C:\\data" and not covered       # the text only repeated the value
+
+
+def test_clean_caps_long_text():
+    from ignite_scribe import uia
+    out = uia.clean("x" * (uia.MAX_TEXT + 50))
+    assert len(out) == uia.MAX_TEXT + len("\n[... truncated]") and out.endswith("[... truncated]")
+
+
+def test_markdown_fences_multiline_blocks():
+    ws = [Window(1, "Terminal", "WindowsTerminal.exe", 1, Rect(0, 0, 10, 10), 0,
+                 text=[TextBlock("PS> dir\n| not a table |\n~~~~", None, "uia", "Text")])]
+    md = Snapshot.now(ws).to_markdown()
+    assert "~~~~text\nPS> dir\n| not a table |\n~ ~ ~ ~\n~~~~" in md

@@ -9,10 +9,13 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
 1. **Win32 windows** (done): visible top-level windows, z-order, focus, bounds, owning process; monitors.
 2. **UI Automation** (done): the control trees of the focused window, then the topmost ones (names, roles,
    values, bounds). Password fields (`IsPassword`) are never read. Each walk is bounded (node cap, deadline, UI
-   Automation's own timeouts). About 120 ms for a whole pass over 4 windows on Desktop 2 (one sitting, warm).
+   Automation's own timeouts). A whole pass over 4 windows on Desktop 2, one sitting: 136-139 ms warm, 234 ms
+   cold, with Windows Terminal's visible text (34 lines) included; about 120 ms before the Text pattern.
    Known gaps:
    - elevated apps (Task Manager) are hidden from a normal process by UIPI, and are noted as unreadable;
-   - document and terminal text behind the Text pattern is not read yet, only the Value pattern.
+   - the Text pattern (since 0.0.3) is read for its visible ranges only, so scrollback and off-screen pages are
+     not in the snapshot. Its multi-line text replaces the element's subtree, so a document's links are not
+     listed separately.
 3. **Change-driven capture**: Desktop Duplication reports the dirty rectangles per frame, so only changed regions
    are reprocessed. A static desktop costs nearly nothing.
 4. **NPU vision** for regions UI Automation leaves blank (images, video, games, remote desktops, canvas apps),

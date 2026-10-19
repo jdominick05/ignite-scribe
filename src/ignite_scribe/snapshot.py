@@ -97,7 +97,12 @@ class Snapshot:
         for w in self.windows:
             if w.text:
                 out += ["", f"## {w.title or '(untitled)'}", ""]
-                out += [f"- [{b.source}{', ' + b.role if b.role else ''}] {b.text}" for b in w.text]
+                for b in w.text:
+                    tag = f"[{b.source}{', ' + b.role if b.role else ''}]"
+                    if "\n" in b.text:      # multi-line (terminal, document): fenced, so markdown keeps it as is
+                        out += [f"- {tag}", "", "~~~~text", b.text.replace("~~~~", "~ ~ ~ ~"), "~~~~", ""]
+                    else:
+                        out.append(f"- {tag} {b.text}")
             if w.notes:
                 out += ["", f"_{'; '.join(w.notes)}_"] if w.text else ["", f"## {w.title or '(untitled)'}", "",
                                                                     f"_{'; '.join(w.notes)}_"]

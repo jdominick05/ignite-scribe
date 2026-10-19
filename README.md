@@ -5,7 +5,8 @@ click. It is served over MCP (and, later, a hook). The OS's own structure comes 
 Automation. NPU vision on XDNA1 (via [ignite-xdna](https://github.com/jdominick05/ignite-xdna)) handles only the pixels
 the OS cannot describe.
 
-**Status: 0.0.2.** Two sources: Win32 windows (no dependencies) and UI Automation (the `uia` extra), with
+**Status: 0.0.3.** Two sources: Win32 windows (no dependencies) and UI Automation (the `uia` extra: control
+names, values, and the on-screen text of terminals and documents), with
 redaction and a stdio MCP server. No pixel capture or OCR yet. See [docs/DESIGN.md](docs/DESIGN.md) for the plan.
 
 ```powershell
@@ -24,7 +25,9 @@ client as a stdio server:
 anything leaves the engine:
 - password-manager processes and sign-in / banking / private-browsing titles are withheld by default;
 - an excluded window is never opened with UI Automation, so its content never enters the engine;
-- password fields are reported as `[password field]`; their value is never requested;
+- password fields are reported as `[password field]`; their value and text are never requested;
+- terminals and documents are read as far as they are visible on screen (not their scrollback), so a terminal's
+  output reaches the agent: exclude a process in the policy file to keep it out;
 - secret-shaped text (API keys, tokens, private keys, JWTs, Luhn-valid card numbers) is replaced;
 - `IGNITE_SCRIBE_POLICY` names a JSON policy file that extends the defaults.
 

@@ -1,9 +1,10 @@
 # Copyright (C) 2026 The ignite-scribe contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A native test window for the UI Automation tests: a label, a plain Edit and a password Edit.
+"""A native test window for the UI Automation tests: a label, a plain Edit, a password Edit and a multiline Edit.
 
 Run as a child process: prints its HWND on stdout, then pumps messages until it is killed. The texts come from
-argv so the test owns the strings it searches for: ``password_window.py TITLE LABEL PLAIN SECRET``.
+argv so the test owns the strings it searches for: ``password_window.py TITLE LABEL PLAIN SECRET LINES``, where
+LINES separates the multiline Edit's lines with ``|``.
 """
 import ctypes
 import sys
@@ -16,13 +17,13 @@ user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LP
                                    wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
 
 WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_CHILD, WS_BORDER = 0x00CF0000, 0x10000000, 0x40000000, 0x00800000
-ES_PASSWORD, ES_AUTOHSCROLL = 0x20, 0x80
+ES_PASSWORD, ES_AUTOHSCROLL, ES_MULTILINE, ES_AUTOVSCROLL = 0x20, 0x80, 0x4, 0x40
 
 
 def main() -> None:
-    title, label, plain, secret = sys.argv[1:5]
+    title, label, plain, secret, lines = sys.argv[1:6]
     user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-    top = user32.CreateWindowExW(0, "STATIC", title, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 120, 120, 520, 260,
+    top = user32.CreateWindowExW(0, "STATIC", title, WS_OVERLAPPEDWINDOW | WS_VISIBLE, 120, 120, 520, 360,
                                  None, None, None, None)
     child = WS_CHILD | WS_VISIBLE
     user32.CreateWindowExW(0, "STATIC", label, child, 20, 20, 460, 24, top, None, None, None)
@@ -30,6 +31,8 @@ def main() -> None:
                            None)
     user32.CreateWindowExW(0, "EDIT", secret, child | WS_BORDER | ES_AUTOHSCROLL | ES_PASSWORD, 20, 100, 460, 28,
                            top, None, None, None)
+    user32.CreateWindowExW(0, "EDIT", "\r\n".join(lines.split("|")),
+                           child | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL, 20, 140, 460, 120, top, None, None, None)
     user32.SetForegroundWindow(top)
     print(int(top), flush=True)
     msg = wintypes.MSG()
