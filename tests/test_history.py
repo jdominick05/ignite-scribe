@@ -187,8 +187,9 @@ def test_tampered_metadata_fails_authentication(hist):
     wait_flushed(hist, 2)
     hist.db.execute("UPDATE chunks SET t0 = t0 - 1 WHERE kind = 'events'")   # move a chunk in time
     hist._cache.clear()
-    with pytest.raises(ValueError, match="authentication"):
-        hist.search("", since=now - 60)
+    out = hist.search("", since=now - 60)
+    assert out["unreadable_chunks"] == 1                 # skipped and counted; the snapshot still answers
+    assert [x["kind"] for x in out["hits"]] == ["snapshot"]
 
 
 def test_search_budget_reports_how_far_it_got(hist):
@@ -210,3 +211,56 @@ def test_purge_empties_and_replaces_the_key(hist):
     old_key = hist.db.execute("SELECT v FROM meta WHERE k = 'key'").fetchone()[0]
     assert hist.purge() == 2 and hist.status()["chunks"] == 0
     assert hist.db.execute("SELECT v FROM meta WHERE k = 'key'").fetchone()[0] != old_key
+
+
+def test_one_recorder_per_file_and_the_reader_takes_over(tmp_path):
+    db = tmp_path / "shared.db"
+    opened = []
+    ts = [__import__("threading").Thread(target=lambda: opened.append(H.History(db, flush_s=0.05, takeover_s=0.1)))
+          for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    a, b = sorted(opened, key=lambda h: not h.recorder)
+    try:
+        assert a.recorder and not b.recorder
+        assert a._key_blob == b._key_blob                 # a fresh file: both use the one key that is stored
+        now = time.time()
+        b.record([dict(kind="opened", hwnd=1, title="X", process="x.exe", seq=1, t=now)])
+        assert b.stats["dropped_not_recorder"] == 1        # a reader never writes
+        a.record([dict(kind="opened", hwnd=1, title="Y", process="y.exe", seq=1, t=now)])
+        wait_flushed(a, 1)
+        assert [x["title"] for x in b.search("", since=now - 60)["hits"]] == ["Y"]
+        with pytest.raises(RuntimeError, match="recording"):
+            b.purge()                                      # refused while a records
+        started = []
+        b.on_recorder = lambda: started.append(1)
+        a.close()
+        end = time.time() + 5
+        while not b.recorder and time.time() < end:
+            time.sleep(0.05)
+        assert b.recorder and started == [1]
+    finally:
+        b.close()
+        a.close()                                          # closing twice is harmless
+
+
+def test_retention_holds_on_open_and_for_reads(tmp_path):
+    db = tmp_path / "r.db"
+    now = time.time()
+    h = H.History(db)
+    old = now - 8 * 86400
+    h._write("snapshot", old, old, 1, snap(old, win(1, "Old", "a.exe", ["ancient line"])).to_dict())
+    h._write("events", old, old, 1, [dict(kind="opened", hwnd=1, title="Old", process="a.exe", seq=1, t=old)])
+    blobs = [r[0] for r in h.db.execute("SELECT blob FROM chunks")]
+    h.close()                                              # nothing new arrives: no flush ever prunes
+    h = H.History(db)
+    try:
+        assert h.status()["chunks"] == 0                   # pruned on open
+        assert h.search("", since=0)["hits"] == []
+        assert h.at(old)["snapshot"] is None
+    finally:
+        h.close()
+    raw = db.read_bytes() + b"".join(f.read_bytes() for f in tmp_path.glob("r.db-*"))
+    assert blobs and not any(bl[1:33] in raw for bl in blobs)   # secure_delete: the deleted ciphertext is gone

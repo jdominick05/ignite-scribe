@@ -42,7 +42,7 @@ def main(argv=None) -> int:
         if not default_path().exists():
             print(f"no history at {default_path()} (it is opt-in: IGNITE_SCRIBE_HISTORY=1)", file=sys.stderr)
             return 1
-        hist = History()
+        hist = History(record=False)
         try:
             if a.action == "status":
                 print(json.dumps(hist.status(), indent=1))

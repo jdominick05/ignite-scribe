@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from typing import Callable
 
@@ -124,6 +125,7 @@ class Server:
         self.history = history
         self.history_on = history is not None or _history.enabled(self.policy)
         self._history_error = None
+        self._watch_lock = threading.RLock()
         self.watcher = watcher
         self.watch = watcher is not None or (source is None and os.environ.get("IGNITE_SCRIBE_WATCH", "1") != "0")
         self._watch_error = None
@@ -143,13 +145,14 @@ class Server:
         """The running watcher, started on first use; None when watching is off or could not start."""
         if not self.watch:
             return None
-        if self.watcher is None:
-            try:
-                from .watch import Watcher
-                self.watcher = Watcher(self.policy, recorder=self._history()).start()
-            except Exception as e:  # noqa: BLE001 - fall back to fresh walks
-                self.watch, self._watch_error = False, f"{type(e).__name__}: {e}"
-                return None
+        with self._watch_lock:                     # the history thread may start it too (recorder takeover)
+            if self.watcher is None:
+                try:
+                    from .watch import Watcher
+                    self.watcher = Watcher(self.policy, recorder=self._history()).start()
+                except Exception as e:  # noqa: BLE001 - fall back to fresh walks
+                    self.watch, self._watch_error = False, f"{type(e).__name__}: {e}"
+                    return None
         return self.watcher
 
     def _history(self):
@@ -160,6 +163,7 @@ class Server:
             try:
                 from .history import History
                 self.history = History()
+                self.history.on_recorder = self._watcher       # took over recording: make sure a watcher feeds it
             except Exception as e:  # noqa: BLE001 - the live tools keep working without history
                 self.history_on, self._history_error = False, f"{type(e).__name__}: {e}"
         return self.history
@@ -170,7 +174,6 @@ class Server:
             raise RuntimeError("screen history is off: it is opt-in (IGNITE_SCRIBE_HISTORY=1, or \"history\": true "
                                "in the policy file)" + (f"; it failed to open: {self._history_error}"
                                                         if self._history_error else ""))
-        self._watcher()                            # recording needs the watcher running
         return h
 
     def close(self):
@@ -349,7 +352,8 @@ def main(server: Server | None = None, stdin=None, stdout=None) -> None:
                 f.reconfigure(encoding="utf-8")
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
-    if server.history_on:                          # history records from the start, not from the first call
+    h = server._history() if server.history_on else None
+    if h is not None and h.recorder:               # the recording process watches from its start
         server._watcher()
     try:
         for line in stdin:

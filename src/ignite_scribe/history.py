@@ -13,7 +13,9 @@ Opt-in: nothing is recorded unless ``IGNITE_SCRIBE_HISTORY=1``, or the policy se
   clear, and they are the cipher's associated data, so they cannot be altered unnoticed. ``purge`` also replaces
   the key.
 - **Retention:** chunks older than ``days`` (7) are deleted, and the oldest go first while the file exceeds
-  ``max_mb`` (200). It is checked at every flush.
+  ``max_mb`` (200). It runs on open, at every flush and every ``prune_s`` (also while the screen is quiet), and
+  reads never reach past it. ``secure_delete`` overwrites deleted chunks instead of leaving them in free pages.
+- **One recorder:** see ``History``. A chunk that fails authentication is skipped and counted, never trusted.
 - **Search:** ``search`` decrypts the chunks in a time range and matches words (case-insensitive, all must
   appear) in window titles and text lines, optionally within windows whose title or process contains ``match``.
   ``at`` returns the snapshot in force at a time, plus the events after it.
@@ -22,6 +24,7 @@ Writes happen on this module's own thread, so a slow disk never stalls the watch
 from __future__ import annotations
 
 import json
+import msvcrt
 import os
 import queue
 import sqlite3
@@ -83,37 +86,99 @@ def aad(kind, t0, t1, n) -> bytes:
 
 
 class History:
+    """One file, many readers, one recorder.
+
+    The MCP server runs in every client session, so several processes may open the same file. Only the one that
+    holds the recorder lock (an exclusive byte-range lock on ``<file>.lock``, released by Windows if the process
+    dies) records; the others only search, and every ``takeover_s`` they try the lock, so when the recording
+    session ends another one carries on (``on_recorder`` is then called, on this module's thread, to start its
+    watcher). ``record=False`` never records (the CLI)."""
+
     def __init__(self, path: str | Path | None = None, days: float = 7.0, max_mb: float = 200.0,
-                 flush_s: float = 60.0, flush_events: int = 500, snapshot_s: float = 300.0):
+                 flush_s: float = 60.0, flush_events: int = 500, snapshot_s: float = 300.0, record: bool = True,
+                 prune_s: float = 600.0, takeover_s: float = 30.0):
         self.path = Path(path) if path else default_path()
         self.days, self.max_mb, self.flush_s, self.flush_events = days, max_mb, flush_s, flush_events
-        self.snapshot_s = snapshot_s
+        self.snapshot_s, self.prune_s, self.takeover_s, self.want_record = snapshot_s, prune_s, takeover_s, record
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._db_lock = threading.Lock()
-        self.db = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None)
+        self._db_lock = threading.RLock()                  # purge holds it while it replaces the key
+        self.db = sqlite3.connect(str(self.path), check_same_thread=False, isolation_level=None, timeout=15)
         self.db.execute("PRAGMA auto_vacuum = INCREMENTAL")
         self.db.execute("PRAGMA journal_mode = WAL")
+        self.db.execute("PRAGMA secure_delete = ON")      # deleted chunks are overwritten, not left in free pages
         self.db.executescript(SCHEMA)
+        self._lockfile = None
+        self.recorder = record and self._take_lock()
+        self.on_recorder = None
+        self._key_blob = None
         self._aead = aesgcm.AesGcm(self._data_key())
+        self.stats = dict(chunks_written=0, events_written=0, snapshots_written=0, deleted=0, errors=0,
+                          dropped_not_recorder=0)
+        self._cache: dict[int, object] = {}
+        self.prune()                                     # retention holds from open, not only after new events
         self._q: queue.Queue = queue.Queue()
         self._pending: list[dict] = []           # events not yet flushed (searchable already)
         self._pending_lock = threading.Lock()
         self._last_snap_t = 0.0
         self._snap_dirty = True
-        self._cache: dict[int, object] = {}
-        self.stats = dict(chunks_written=0, events_written=0, snapshots_written=0, deleted=0, errors=0)
         self.last_error = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ignite-scribe-history", daemon=True)
         self._thread.start()
 
+    # ---- the recorder lock and the key ------------------------------------------------------------------------
+    def _take_lock(self) -> bool:
+        if self._lockfile is not None:
+            return True
+        f = open(self.path.with_name(self.path.name + ".lock"), "a+b")
+        try:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            f.close()
+            return False
+        self._lockfile = f
+        return True
+
+    def _release_lock(self):
+        if self._lockfile is not None:
+            try:
+                self._lockfile.seek(0)
+                msvcrt.locking(self._lockfile.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            self._lockfile.close()
+            self._lockfile = None
+
     def _data_key(self, new: bool = False) -> bytes:
-        row = None if new else self.db.execute("SELECT v FROM meta WHERE k = 'key'").fetchone()
-        if row is not None:
-            return dpapi.unprotect(row[0])
-        key = os.urandom(32)
-        self.db.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('key', ?)", (dpapi.protect(key),))
-        return key
+        """The data key, created once per file inside one write transaction, so processes opening a fresh file
+        at the same time all end up with the key that is stored."""
+        with self._db_lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.db.execute("SELECT v FROM meta WHERE k = 'key'").fetchone()
+                if row is None or new:
+                    blob = dpapi.protect(os.urandom(32))
+                    self.db.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('key', ?)", (blob,))
+                else:
+                    blob = row[0]
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+        self._key_blob = blob
+        return dpapi.unprotect(blob)
+
+    def _reload_key(self) -> bool:
+        """Pick up a key replaced by another process's purge. True if it changed."""
+        with self._db_lock:
+            row = self.db.execute("SELECT v FROM meta WHERE k = 'key'").fetchone()
+        if row is None or row[0] == self._key_blob:
+            return False
+        old, self._aead = self._aead, aesgcm.AesGcm(self._data_key())
+        old.close()
+        self._cache.clear()
+        return True
 
     def seal(self, kind, t0, t1, n, obj) -> bytes:
         raw = zlib.compress(json.dumps(obj, ensure_ascii=False).encode("utf-8"), 6)
@@ -126,12 +191,34 @@ class History:
 
     # ---- writing (the watcher calls ``record``; everything else happens on this module's thread) -----------
     def record(self, events: list[dict], snapshot=None):
-        """Queue redacted events (and the redacted snapshot they came from). Never blocks on the disk."""
+        """Queue redacted events (and the redacted snapshot they came from). Never blocks on the disk. Dropped
+        unless this instance is the recorder."""
+        if not self.recorder:
+            self.stats["dropped_not_recorder"] += len(events)
+            return
         self._q.put((list(events), snapshot))
+
+    def _maintain(self, now, last):
+        """Retention on a timer (also while nothing changes), and recorder takeover."""
+        if now - last["prune"] >= self.prune_s:
+            last["prune"] = now
+            self.prune()
+        if self.want_record and not self.recorder and now - last["takeover"] >= self.takeover_s:
+            last["takeover"] = now
+            if self._take_lock():
+                self._reload_key()
+                self.recorder = True
+                if self.on_recorder is not None:
+                    self.on_recorder()
 
     def _run(self):
         last_flush = time.time()
+        last = dict(prune=time.time(), takeover=time.time())
         while not self._stop.is_set() or not self._q.empty():
+            try:
+                self._maintain(time.time(), last)
+            except Exception as e:  # noqa: BLE001
+                self._error(e)
             try:
                 events, snap = self._q.get(timeout=0.5)
                 with self._pending_lock:
@@ -165,6 +252,7 @@ class History:
             self._error(e)
 
     def _write(self, kind, t0, t1, n, obj):
+        self._reload_key()                               # never seal with a key a purge has replaced
         blob = self.seal(kind, t0, t1, n, obj)
         with self._db_lock:
             self.db.execute("INSERT INTO chunks (kind, t0, t1, n, blob) VALUES (?, ?, ?, ?, ?)", (kind, t0, t1, n, blob))
@@ -184,9 +272,9 @@ class History:
                     break
                 n += self.db.execute(f"DELETE FROM chunks WHERE id IN ({','.join('?' * len(ids))})", ids).rowcount
                 self.db.execute("PRAGMA incremental_vacuum")
-                self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             if n:
                 self.db.execute("PRAGMA incremental_vacuum")
+                self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         self.stats["deleted"] += n
         if n:
             self._cache.clear()
@@ -205,9 +293,14 @@ class History:
         with self._db_lock:
             self.db.close()
         self._aead.close()
+        self._release_lock()
 
     def purge(self) -> int:
-        """Delete everything recorded (the file stays, empty)."""
+        """Delete everything recorded (the file stays, empty) and replace the key. Refused while another process
+        records, since it would go on sealing with the old key."""
+        if not self.recorder and not self._take_lock():
+            raise RuntimeError("an ignite-scribe server is recording this history now; close its client sessions "
+                               "(or set IGNITE_SCRIBE_HISTORY=0 for them) and purge again")
         with self._pending_lock:
             self._pending = []
         with self._db_lock:
@@ -220,23 +313,41 @@ class History:
         return n
 
     # ---- reading ---------------------------------------------------------------------------------------------
-    def _chunks(self, kind, since, until):
+    def _open(self, kind, t0, t1, n, blob, bad: list):
+        """A chunk's contents, or None (counted in ``bad``) when it fails authentication even with the stored key."""
+        for attempt in (0, 1):
+            try:
+                return self.unseal(kind, t0, t1, n, blob)
+            except ValueError:
+                if attempt or not self._reload_key():
+                    bad.append(1)
+                    return None
+
+    def _chunks(self, kind, since, until, bad: list):
         with self._db_lock:
             rows = self.db.execute("SELECT id, t0, t1, n, blob FROM chunks WHERE kind = ? AND t1 >= ? AND t0 <= ? "
                                    "ORDER BY t0 DESC", (kind, since, until)).fetchall()
         for cid, t0, t1, n, blob in rows:
-            if cid not in self._cache:
+            got = self._cache.get(cid)
+            if got is None:
+                got = self._open(kind, t0, t1, n, blob, bad)
+                if got is None:
+                    continue
                 if len(self._cache) > 256:
                     self._cache.clear()
-                self._cache[cid] = self.unseal(kind, t0, t1, n, blob)
-            yield t0, t1, self._cache[cid]
+                self._cache[cid] = got
+            yield t0, t1, got
+
+    def horizon(self, now: float | None = None) -> float:
+        return (time.time() if now is None else now) - self.days * 86400
 
     def search(self, query: str = "", since: float | None = None, until: float | None = None,
                match: str | None = None, limit: int = 50, budget_s: float = 8.0) -> dict:
         """Hits newest first. Stops after ``budget_s`` (``complete`` False, ``searched_back_to`` says how far)."""
         now = time.time()
-        since = now - self.days * 86400 if since is None else since
+        since = self.horizon(now) if since is None else max(since, self.horizon(now))   # never past retention
         until = now if until is None else until
+        bad: list = []
         terms = [t.lower() for t in query.split()]
         m = (match or "").lower()
         hits, seen = [], {}
@@ -273,7 +384,7 @@ class History:
             pending = list(self._pending)
         from_events(pending)
         for kind in ("snapshot", "events"):             # newest first; snapshots are few and hold whole windows
-            for t0, _, chunk in self._chunks(kind, since, until):
+            for t0, _, chunk in self._chunks(kind, since, until, bad):
                 if time.monotonic() > end:
                     break
                 if kind == "events":
@@ -295,6 +406,8 @@ class History:
         back = max(reached.values())
         res = dict(query=query, since=iso(since), until=iso(until), total=len(hits), hits=out,
                    complete=back <= since)
+        if bad:
+            res["unreadable_chunks"] = len(bad)        # failed authentication: skipped, never trusted
         if back > since:
             res["searched_back_to"] = iso(back)
             res["note_partial"] = (f"stopped after the {budget_s:g} s budget; narrow `since` or ask again with "
@@ -302,27 +415,42 @@ class History:
         return res
 
     def at(self, t: float, events_limit: int = 200) -> dict:
-        """The redacted snapshot in force at ``t`` (the last one recorded before it) and the events after it."""
+        """The redacted snapshot in force at ``t`` (the last readable one recorded before it, within retention)
+        and the events after it."""
+        h = self.horizon()
+        if t < h:
+            return dict(at=iso(t), snapshot=None, events=[], note=f"older than the {self.days:g}-day retention")
+        bad: list = []
         with self._db_lock:
-            row = self.db.execute("SELECT id, t0, t1, n, blob FROM chunks WHERE kind = 'snapshot' AND t0 <= ? "
-                                  "ORDER BY t0 DESC LIMIT 1", (t,)).fetchone()
-        if row is None:
-            return dict(at=iso(t), snapshot=None, events=[], note="no snapshot recorded before this time")
-        snap = self.unseal("snapshot", *row[1:])
+            rows = self.db.execute("SELECT id, t0, t1, n, blob FROM chunks WHERE kind = 'snapshot' AND t0 <= ? "
+                                   "AND t0 >= ? ORDER BY t0 DESC", (t, h)).fetchall()
+        snap = row = None
+        for row in rows:
+            snap = self._open("snapshot", *row[1:], bad)
+            if snap is not None:
+                break
+        if snap is None:
+            return dict(at=iso(t), snapshot=None, events=[], note="no snapshot recorded before this time",
+                        **({"unreadable_chunks": len(bad)} if bad else {}))
         evs = []
-        for _, _, chunk in self._chunks("events", row[1], t):
+        for _, _, chunk in self._chunks("events", row[1], t, bad):
             evs += [e for e in chunk if row[1] < e["t"] <= t]
         with self._pending_lock:
             evs += [e for e in self._pending if row[1] < e["t"] <= t]
         evs.sort(key=lambda e: e["seq"] if "seq" in e else e["t"])
         return dict(at=iso(t), snapshot_taken=iso(row[1]), snapshot=snap, events=evs[-events_limit:],
-                    events_total=len(evs))
+                    events_total=len(evs), **({"unreadable_chunks": len(bad)} if bad else {}))
 
     def status(self) -> dict:
         with self._db_lock:
             r = self.db.execute("SELECT COUNT(*), MIN(t0), MAX(t1), SUM(n) FROM chunks").fetchone()
             mb = self.size_mb()
-        return dict(recording=self._thread.is_alive(), path=str(self.path), chunks=r[0], oldest=iso(r[1]) if r[1] else None,
-                    newest=iso(r[2]) if r[2] else None, size_mb=round(mb, 2), retention_days=self.days,
-                    max_mb=self.max_mb, pending_events=len(self._pending), encrypted="AES-256-GCM, key wrapped with DPAPI (current user)",
-                    **self.stats, last_error=self.last_error)
+        role = ("recorder" if self.recorder else
+                "reader: another ignite-scribe process records; this one takes over when it exits" if self.want_record
+                else "reader")
+        return dict(recording=self.recorder and self._thread.is_alive(), role=role, path=str(self.path),
+                    chunks=r[0], oldest=iso(r[1]) if r[1] else None, newest=iso(r[2]) if r[2] else None,
+                    size_mb=round(mb, 2), retention_days=self.days, max_mb=self.max_mb,
+                    pending_events=len(self._pending),
+                    encrypted="AES-256-GCM, key wrapped with DPAPI (current user)", **self.stats,
+                    last_error=self.last_error)

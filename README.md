@@ -54,7 +54,10 @@ events in memory only, unless history is on.
 - The file is `%LOCALAPPDATA%\ignite-scribe\history.db` (`IGNITE_SCRIBE_HISTORY_DB` overrides it). Each chunk is
   sealed with AES-256-GCM (Windows CNG) under a random key that is stored only wrapped with DPAPI for your Windows
   account: another account, or the file copied to another machine, cannot read it.
-- Chunks older than 7 days are deleted, and the oldest go first above 200 MB.
+- Chunks older than 7 days are deleted (overwritten, not left in free pages), and the oldest go first above
+  200 MB. This runs on open and every 10 minutes, and searches never reach past 7 days.
+- With several client sessions open, one server records and the others only search; when it exits, another
+  takes over.
 - `search_screen_history` (words, a window filter, a time range) and `screen_at` (the screen at a past time) read
   it. Agents cannot delete it; `python -m ignite_scribe history purge` deletes it all and replaces the key.
 
