@@ -8,6 +8,9 @@ Tools:
     screen_changes       what changed since a sequence number (windows opened / closed / focused / moved /
                          renamed, lines that appeared), from the change-driven watcher
     list_windows         just the window list (no content read), optionally filtered by title / process
+    find_ui_elements     UI elements (boxes, no text) in windows UI Automation cannot describe, found by the
+                         icon detector on the NPU (``vision_stage``); opt-in per call, ``IGNITE_SCRIBE_VISION=0``
+                         removes it
 
 Every result carries the untrusted-content note, and redaction (``redact.Policy``) runs before anything is
 returned. ``IGNITE_SCRIBE_POLICY`` names a policy file (JSON) merged with the defaults.
@@ -56,6 +59,17 @@ TOOLS = [
          "limit": {"type": "integer", "description": "raw events to return at most (default 200)"},
          "merge": {"type": "boolean", "description": "merge repeats per window, e.g. a spinner in a title "
                                                      "(default true)"}}}},
+    {"name": "find_ui_elements",
+     "description": "Find clickable UI elements (icons, buttons; boxes and confidence, no text) in windows that UI "
+                    "Automation cannot describe (canvas apps, images, remote desktops, games), with an icon "
+                    "detector on the NPU. Reads the screen pixels of those windows only, in memory; windows above "
+                    "them, excluded windows and password fields are never copied. Without `match` it looks only at "
+                    "windows UI Automation left empty. Untrusted screen content.",
+     "inputSchema": {"type": "object", "properties": {
+         "match": {"type": "string", "description": "only windows whose title or process contains this"},
+         "max_windows": {"type": "integer", "description": "windows to look at, focused first (default 3)"},
+         "conf": {"type": "number", "description": "detector confidence floor (default 0.05)"},
+         "format": {"enum": ["markdown", "json"], "description": "default markdown"}}}},
     {"name": "list_windows",
      "description": "Open windows, optionally filtered. Redacted; untrusted screen content.",
      "inputSchema": {"type": "object", "properties": {
@@ -76,6 +90,8 @@ class Server:
         self.watcher = watcher
         self.watch = watcher is not None or (source is None and os.environ.get("IGNITE_SCRIBE_WATCH", "1") != "0")
         self._watch_error = None
+        self.vision_enabled = os.environ.get("IGNITE_SCRIBE_VISION", "1") != "0"
+        self.vision = None
         if source is None:
             from .collect import collect
 
@@ -106,10 +122,15 @@ class Server:
             watch = (w.status() if w is not None else
                      dict(running=False, enabled=self.watch, error=self._watch_error,
                           note="starts on the first screen tool call" if self.watch else "IGNITE_SCRIBE_WATCH=0"))
+            from . import vision_client
+            ok, why = vision_client.available()
+            vision = (self.vision.status() if self.vision is not None else
+                      dict(running=False, enabled=self.vision_enabled, available=ok, why=why or None,
+                           note="starts on the first find_ui_elements call, stops after 30 s idle"))
             return dict(version=__version__,
                         sources=["windows"] + (["uia"] if uia.available() else ["uia unavailable (install [uia])"]),
-                        watch=watch,
-                        planned=["ocr fallback (npu)", "ui element detection (npu)", "history"],
+                        watch=watch, vision=vision,
+                        planned=["ocr (npu)", "history"],
                         exclude_processes=self.policy.exclude_processes,
                         exclude_title_patterns=self.policy.exclude_title_patterns)
         if name == "get_screen_state":
@@ -137,6 +158,39 @@ class Server:
             out = w.changes(int(args.get("since", 0)), int(args.get("limit", 200)), bool(args.get("merge", True)))
             out["note"] = UNTRUSTED
             return json.dumps(out, indent=1, ensure_ascii=False)
+        if name == "find_ui_elements":
+            if not self.vision_enabled:
+                raise RuntimeError("vision is off (IGNITE_SCRIBE_VISION=0)")
+            import copy
+            from . import vision_client, vision_stage
+            ok, why = vision_client.available()
+            if not ok:
+                raise RuntimeError(f"vision unavailable: {why}")
+            w = self._watcher()
+            snap = None
+            if w is not None:
+                snap, counts, _ = w.snapshot()
+            if snap is None:
+                snap, counts = self._snap()
+            snap = copy.deepcopy(snap)               # the watcher's state is shared; never write into it
+            if self.vision is None:
+                self.vision = vision_client.VisionWorker()
+            rep = vision_stage.run(snap, self.policy, self.vision, args.get("match"),
+                                   int(args.get("max_windows", 3)), conf=float(args.get("conf", 0.05)))
+            looked = {x["hwnd"] for x in rep["windows"]}
+            snap.windows = [x for x in snap.windows if x.hwnd in looked]
+            if args.get("format") == "json":
+                d = snap.to_dict()
+                d["vision"] = rep
+                return json.dumps(d, indent=1, ensure_ascii=False)
+            lines = [f"- {x.get('title') or '(untitled)'}: " + (x["note"] if "note" in x else
+                     f"{x['kept']} new elements ({x['detected']} detected, {x['tiles']} tiles at scale "
+                     f"{x['scale']:g}, {x['backend']}, detector {x['detector_ms']} ms, total {x['total_ms']} ms, "
+                     f"{x['masked_fraction']:.0%} masked)") for x in rep["windows"]]
+            skipped = [f"- hwnd {x['hwnd']}: {x['why']}" for x in rep["skipped"]
+                       if x["why"] != "UI Automation already describes it"]
+            return (snap.to_markdown() + "\nVision:\n" + ("\n".join(lines) or "- no window needed it") +
+                    ("\n\nSkipped:\n" + "\n".join(skipped) if skipped else "") + "\n")
         if name == "list_windows":
             snap, counts = self._snap(text=False)
             m = (args.get("match") or "").lower()

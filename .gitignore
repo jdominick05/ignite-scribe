@@ -21,3 +21,9 @@ AGENTS.md
 QWEN.md
 GEMINI.md
 .mcp.json
+
+# models, compiled containers and calibration tiles (large; weights carry their own licences)
+models/
+build/
+calib/
+results/

@@ -9,8 +9,9 @@ Redaction runs on every snapshot before any consumer sees it (MCP, hook, history
   are replaced in any text that survives the first layer.
 UI Automation's ``IsPassword`` flag is honoured when that source exists (password fields are never read).
 
-The policy file is JSON: ``{"exclude_processes": [...], "exclude_title_patterns": [...]}``, merged with the
-defaults. Patterns are case-insensitive regular expressions.
+The policy file is JSON: ``{"exclude_processes": [...], "exclude_title_patterns": [...], "capture_elevated":
+false}``, merged with the defaults. Patterns are case-insensitive regular expressions. ``capture_elevated`` lets
+the vision stage copy the pixels of elevated windows, which UI Automation cannot read (off by default).
 """
 from __future__ import annotations
 
@@ -71,6 +72,7 @@ def scrub(text: str) -> tuple[str, int]:
 class Policy:
     exclude_processes: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_PROCESSES))
     exclude_title_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_TITLES))
+    capture_elevated: bool = False   # may vision copy the pixels of elevated windows (UIA cannot read them)?
 
     @staticmethod
     def load(path: str | Path | None) -> Policy:
@@ -79,6 +81,7 @@ class Policy:
             d = json.loads(Path(path).read_text(encoding="utf-8"))
             p.exclude_processes += [s.lower() for s in d.get("exclude_processes", [])]
             p.exclude_title_patterns += d.get("exclude_title_patterns", [])
+            p.capture_elevated = bool(d.get("capture_elevated", False))
         return p
 
     def excluded(self, w: Window) -> bool:
@@ -91,7 +94,7 @@ class Policy:
         windows, withheld, secrets = [], 0, 0
         for w in snap.windows:
             if self.excluded(w):
-                windows.append(replace(w, title=WITHHELD, text=[], redacted=True))
+                windows.append(replace(w, title=WITHHELD, text=[], elements=[], redacted=True))
                 withheld += 1
                 continue
             title, k = scrub(w.title)

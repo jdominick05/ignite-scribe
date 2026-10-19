@@ -42,6 +42,15 @@ class TextBlock:
 
 
 @dataclass
+class Element:
+    """A UI element found by vision (no text: what it is, the detector does not say)."""
+    rect: Rect
+    score: float
+    kind: str = "icon"
+    source: str = "npu"          # the detector backend that found it: "npu" or "cpu"
+
+
+@dataclass
 class Window:
     hwnd: int
     title: str
@@ -54,6 +63,7 @@ class Window:
     redacted: bool = False        # title / content withheld by the redaction policy
     text: list[TextBlock] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)   # how the content was gathered (caps hit, errors)
+    elements: list[Element] = field(default_factory=list)   # vision detections UI Automation did not cover
 
 
 @dataclass
@@ -106,4 +116,10 @@ class Snapshot:
             if w.notes:
                 out += ["", f"_{'; '.join(w.notes)}_"] if w.text else ["", f"## {w.title or '(untitled)'}", "",
                                                                     f"_{'; '.join(w.notes)}_"]
+            if w.elements:
+                if not w.text and not w.notes:
+                    out += ["", f"## {w.title or '(untitled)'}"]
+                out += ["", f"UI elements found by vision ({len(w.elements)}, no text; screen pixels x0,y0-x1,y1):", ""]
+                out += [f"- [{e.source}, {e.kind} {e.score:.2f}] ({e.rect.left},{e.rect.top})-"
+                        f"({e.rect.right},{e.rect.bottom})" for e in w.elements]
         return "\n".join(out) + "\n"

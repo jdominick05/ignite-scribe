@@ -34,8 +34,8 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
      - the watcher thread used 4.3-7.4% of one core;
      - `get_screen_state` from its state returns in under 1 ms, against about 120-140 ms for a fresh walk.
      - A truly idle desktop was not measured.
-4. **NPU vision** for regions UI Automation leaves blank (images, video, games, remote desktops, canvas apps),
-   through ignite-xdna:
+4. **NPU vision** (UI elements done, `find_ui_elements`; see VISION.md) for regions UI Automation leaves
+   blank (images, video, games, remote desktops, canvas apps), through ignite-xdna:
    - UI element detection: OmniParser's detector is a fine-tuned YOLOv8 (AGPL), the engine's strongest
      measured case;
    - text detection and recognition (OCR). Windows' built-in OCR is the CPU fallback and the baseline to beat.
@@ -59,7 +59,11 @@ server and the hook will be its clients.
 - Redaction at the source, before any consumer, history included. It covers excluded processes and title patterns
   (the window keeps its position, and its title and content are withheld), plus secret-shaped text.
 - Every output carries the untrusted-content note. Screen text is data, never instructions.
-- Planned: a pause hotkey, a running indicator, and no raw screenshots kept by default.
+- Pixels are read only by the vision stage, only per call, and never written anywhere.
+  - Exclusion is applied before capture: masked areas are never blitted. They cover windows above the target,
+    excluded windows, and password fields.
+  - Elevated windows are skipped unless `capture_elevated` is set.
+- Planned: a pause hotkey and a running indicator.
 
 ## Prior art (checked 2026-10-19)
 - screenpipe: continuous capture, accessibility first, OCR fallback, SQLite + MCP. CPU, about 1 frame a second.
