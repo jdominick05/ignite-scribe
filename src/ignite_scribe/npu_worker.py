@@ -10,6 +10,10 @@ ending in a newline) and optional raw bytes.
 - request ``{"op": "detect", "n": k, "conf": c, "iou": i}`` + k x 640 x 640 x 3 uint8 RGB tiles;
   reply ``{"ok": true, "backend": ..., "tiles": [{"boxes": [[x0, y0, x1, y1], ...], "scores": [...]}], "ms": [...]}``
   with boxes in tile pixels, NMS applied per tile;
+- request ``{"op": "ocr", "shapes": [[h, w], ...]}`` + the images' h x w x 3 uint8 RGB bytes, concatenated;
+  reply ``{"ok": true, "ocr_backend": "cpu", "images": [{"lines": [{"box": [x0, y0, x1, y1], "text": ..., "score":
+  ...}], "det_ms": ..., "rec_ms": ...}]}``, boxes in image pixels (``ocr_pipeline``). The OCR models load on the
+  first such request. Both models run on the CPU: the recognizer needs the engine's bf16 datapath (docs/OCR.md);
 - ``{"op": "ping"}`` -> ``{"ok": true, "backend": ..., "reason": ...}``;
 - ``{"op": "close"}``, or EOF on stdin -> the session is closed (the NPU context released) and the process exits.
 
@@ -117,10 +121,14 @@ def main(argv=None) -> int:
     ap.add_argument("--container", required=True)
     ap.add_argument("--onnx", required=True, help="the quantized ONNX the container was built from (CPU fallback)")
     ap.add_argument("--backend", choices=["auto", "npu", "cpu"], default="auto")
+    ap.add_argument("--ocr-det", help="text detector ONNX (ppocrv5_mobile_det)")
+    ap.add_argument("--ocr-rec", help="text-line recognizer ONNX (en_ppocrv5_rec, dynamic width)")
+    ap.add_argument("--ocr-dict", help="the recognizer's character list")
     a = ap.parse_args(argv)
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     sys.stdout = sys.stderr                      # nothing but frames may reach the real stdout
     backend, reason = open_backend(a.backend, a.container, a.onnx)
+    ocr_pipe = None
     try:
         while True:
             msg = read_frame(stdin)
@@ -132,6 +140,25 @@ def main(argv=None) -> int:
                 break
             if op == "ping":
                 write_frame(stdout, dict(ok=True, backend=backend.name, reason=reason))
+                continue
+            if op == "ocr":
+                try:
+                    if ocr_pipe is None:
+                        if not (a.ocr_det and a.ocr_rec and a.ocr_dict):
+                            raise RuntimeError("the worker was started without OCR models")
+                        from .ocr_pipeline import OcrPipeline
+                        ocr_pipe = OcrPipeline(a.ocr_det, a.ocr_rec, a.ocr_dict)
+                    out, off = [], 0
+                    for hh, ww in h["shapes"]:
+                        n = int(hh) * int(ww) * 3
+                        img = np.frombuffer(raw, np.uint8, n, off).reshape(int(hh), int(ww), 3)
+                        off += n
+                        lines = ocr_pipe(img)
+                        out.append(dict(lines=[dict(box=list(map(int, l.box)), text=l.text, score=round(l.score, 4))
+                                               for l in lines], **ocr_pipe.last))
+                    write_frame(stdout, dict(ok=True, ocr_backend="cpu", images=out))
+                except Exception as e:  # noqa: BLE001
+                    write_frame(stdout, dict(ok=False, error=f"{type(e).__name__}: {e}"))
                 continue
             if op != "detect":
                 write_frame(stdout, dict(ok=False, error=f"unknown op {op}"))

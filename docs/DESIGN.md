@@ -38,7 +38,9 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
    blank (images, video, games, remote desktops, canvas apps), through ignite-xdna:
    - UI element detection: OmniParser's detector is a fine-tuned YOLOv8 (AGPL), the engine's strongest
      measured case;
-   - text detection and recognition (OCR). Windows' built-in OCR is the CPU fallback and the baseline to beat.
+   - text detection and recognition (OCR): done on the CPU, `ocr_windows` (PP-OCRv5 mobile, four times fewer
+     character errors than Windows' built-in OCR). The recognizer moves to the NPU when ignite-xdna's bf16
+     datapath can run it (see OCR.md).
 5. **History**: snapshots in SQLite with a retention limit, plus embeddings for "what was on screen when" (batched,
    since short single embeddings lose to the iGPU on this NPU).
 

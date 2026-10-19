@@ -93,6 +93,7 @@ def main():
     ap.add_argument("--width", type=int, default=320, help="0: each line at its own width (a dynamic-width model)")
     ap.add_argument("--upscale", type=float, default=1.0)
     ap.add_argument("--limit", type=int)
+    ap.add_argument("--bgr", action="store_true", help="feed channels in BGR order, as PaddleOCR (cv2) does")
     ap.add_argument("--out", help="also write per-line results (JSON)")
     a = ap.parse_args()
     rows = [l.split("\t", 1) for l in (Path(a.data) / "labels.tsv").read_text(encoding="utf-8").splitlines()]
@@ -107,6 +108,8 @@ def main():
     run(np.asarray(Image.open(Path(a.data) / rows[0][0]).convert("RGB")))       # warm-up
     for f, ref in rows:
         rgb = np.asarray(Image.open(Path(a.data) / f).convert("RGB"))
+        if a.bgr:
+            rgb = rgb[:, :, ::-1].copy()
         t0 = time.perf_counter()
         hyp = run(rgb)
         ms.append((time.perf_counter() - t0) * 1000)

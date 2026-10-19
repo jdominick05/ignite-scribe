@@ -5,17 +5,19 @@ click. It is served over MCP (and, later, a hook). The OS's own structure comes 
 Automation. NPU vision on XDNA1 (via [ignite-xdna](https://github.com/jdominick05/ignite-xdna)) handles only the pixels
 the OS cannot describe.
 
-**Status: 0.0.5.** Two sources: Win32 windows (no dependencies) and UI Automation (the `uia` extra: control
+**Status: 0.0.6.** Two sources: Win32 windows (no dependencies) and UI Automation (the `uia` extra: control
 names, values, and the on-screen text of terminals and documents), kept current by a change-driven watcher
 that re-reads only the windows that changed, with redaction and a stdio MCP server. For windows UI
 Automation cannot describe, `find_ui_elements` finds UI elements (boxes, no text) with an icon detector
-running on the XDNA1 NPU (see [docs/VISION.md](docs/VISION.md)). No OCR yet. See [docs/DESIGN.md](docs/DESIGN.md) for the plan.
+running on the XDNA1 NPU (see [docs/VISION.md](docs/VISION.md)), and `ocr_windows` reads their text with
+PP-OCRv5, on the CPU until the NPU engine can run its recognizer ([docs/OCR.md](docs/OCR.md)). See [docs/DESIGN.md](docs/DESIGN.md) for the plan.
 
 ```powershell
 python -m ignite_scribe snapshot          # the redacted screen state once, as markdown (--json, --no-text)
 python -m ignite_scribe watch --seconds 30 # change events as JSON lines (Ctrl+C to stop)
 python -m ignite_scribe mcp               # MCP tools on stdio: scribe_status, get_screen_state,
-                                          #   screen_changes, find_ui_elements, list_windows
+                                          #   screen_changes, find_ui_elements, ocr_windows,
+                                          #   list_windows
 ```
 
 Install it (`pip install -e .`, or `pip install -e .[uia]` for UI Automation), then register it with any MCP
@@ -43,11 +45,13 @@ Duplication's changed-rectangle list and from window events, without reading pix
 history in memory only.
 
 **Vision reads pixels, and only when called.**
-- `find_ui_elements` copies the on-screen pixels of the windows it looks at, in memory, never to disk.
+- `find_ui_elements` and `ocr_windows` copy the on-screen pixels of the windows they look at, in memory, never
+  to disk.
 - It never copies windows above them, excluded windows, or password fields. Those areas are left grey.
 - It skips elevated windows unless the policy sets `capture_elevated`.
-- Its NPU worker starts on the first call and exits after 30 s idle, releasing the NPU.
-- `IGNITE_SCRIBE_VISION=0` removes the tool.
+- OCR text is redacted like UI Automation text, and lines lying under masked areas are dropped.
+- The vision worker starts on the first call and exits after 30 s idle, releasing the NPU.
+- `IGNITE_SCRIBE_VISION=0` turns both tools off.
 
 The detector is OmniParser V1's `icon_detect`, under AGPL-3.0; it is not shipped here. Building it for the
 NPU needs [ignite-xdna](https://github.com/jdominick05/ignite-xdna); docs/VISION.md has the steps.

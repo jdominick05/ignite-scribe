@@ -15,6 +15,8 @@ Configuration, from the environment:
 - ``IGNITE_SCRIBE_CONTAINER`` / ``IGNITE_SCRIBE_ONNX``: the ``.ignite`` container and its CPU reference ONNX.
   Defaults are under this checkout's ``build/`` and ``models/``.
 - ``IGNITE_SCRIBE_VISION_BACKEND``: ``auto`` (NPU, else CPU), ``npu`` or ``cpu``.
+- ``IGNITE_SCRIBE_OCR_DIR``: the directory with ``ppocrv5_mobile_det.onnx``, ``en_ppocrv5_rec.onnx`` and
+  ``dict.txt`` (default: this checkout's ``models/ocr``).
 """
 from __future__ import annotations
 
@@ -36,10 +38,25 @@ DEFAULT_ONNX = ROOT / "models" / "omniparser_v1" / "icon_detect_v1_640_cut_xint8
 def config() -> dict:
     env = os.environ.get
     xdna = Path(env("IGNITE_SCRIBE_XDNA", str(ROOT.parent / "ignite-xdna")))
+    ocr_dir = Path(env("IGNITE_SCRIBE_OCR_DIR", str(ROOT / "models" / "ocr")))
     return dict(python=env("IGNITE_SCRIBE_NPU_PYTHON", str(DEFAULT_PYTHON)), xdna=str(xdna),
                 container=env("IGNITE_SCRIBE_CONTAINER", str(DEFAULT_CONTAINER)),
                 onnx=env("IGNITE_SCRIBE_ONNX", str(DEFAULT_ONNX)),
-                backend=env("IGNITE_SCRIBE_VISION_BACKEND", "auto"))
+                backend=env("IGNITE_SCRIBE_VISION_BACKEND", "auto"),
+                ocr_det=str(ocr_dir / "ppocrv5_mobile_det.onnx"), ocr_rec=str(ocr_dir / "en_ppocrv5_rec.onnx"),
+                ocr_dict=str(ocr_dir / "dict.txt"))
+
+
+def ocr_available(cfg: dict | None = None) -> tuple[bool, str]:
+    """-> (can the worker read text, why not). Checks files only."""
+    cfg = cfg or config()
+    ok, why = available(cfg)
+    if not ok:
+        return ok, why
+    for key in ("ocr_det", "ocr_rec", "ocr_dict"):
+        if not Path(cfg[key]).is_file():
+            return False, f"{key} not found: {cfg[key]} (docs/OCR.md: getting the models)"
+    return True, ""
 
 
 def available(cfg: dict | None = None) -> tuple[bool, str]:
@@ -74,8 +91,9 @@ class VisionWorker:
         env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(Path(c["xdna"]) / "src"), str(ROOT / "src")]),
                    PYTHONIOENCODING="utf-8")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        ocr = [f"--ocr-{k}={c['ocr_' + k]}" for k in ("det", "rec", "dict") if Path(c.get("ocr_" + k, "")).is_file()]
         self.proc = subprocess.Popen([c["python"], "-m", "ignite_scribe.npu_worker", "--container", c["container"],
-                                      "--onnx", c["onnx"], "--backend", c["backend"]],
+                                      "--onnx", c["onnx"], "--backend", c["backend"], *ocr],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                      env=env, creationflags=flags)
         self.started = time.monotonic()
@@ -142,6 +160,22 @@ class VisionWorker:
             self.last_used = time.monotonic()
             self.calls += 1
             self.tiles += len(arr)
+        if not h.get("ok"):
+            raise RuntimeError(f"vision worker: {h.get('error')}")
+        return h
+
+    def ocr(self, images) -> dict:
+        """HxWx3 uint8 RGB images (any sizes) -> the worker's reply (per-image lines in image pixels)."""
+        import numpy as np
+        arrs = [np.ascontiguousarray(np.asarray(i, np.uint8)) for i in images]
+        with self._lock:
+            if not self.running:
+                self._start()
+            self.last_used = time.monotonic()
+            h, _ = self._call(dict(op="ocr", shapes=[list(a.shape[:2]) for a in arrs]),
+                              b"".join(a.tobytes() for a in arrs))
+            self.last_used = time.monotonic()
+            self.calls += 1
         if not h.get("ok"):
             raise RuntimeError(f"vision worker: {h.get('error')}")
         return h

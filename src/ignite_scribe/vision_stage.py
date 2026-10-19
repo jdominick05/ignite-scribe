@@ -128,3 +128,47 @@ def run(snap: Snapshot, policy, worker, match: str | None = None, max_windows: i
             scale=scale, masked_fraction=round(masked, 3), detected=found, kept=kept_n,
             detector_ms=round(sum(reply["ms"]), 2), total_ms=round((time.perf_counter() - t0) * 1000, 1)))
     return report
+
+
+def ocr_run(snap: Snapshot, policy, worker, match: str | None = None, max_windows: int = 3,
+            max_pixels: int = 12_000_000) -> tuple[Snapshot, dict]:
+    """Read the text in the chosen windows' pixels -> (a redacted copy of ``snap`` with OCR blocks added, a report).
+
+    Same choice and masked capture as ``run``. Each window's lines become ``TextBlock(source="ocr")`` in screen
+    pixels, and lines lying mostly in masked areas are dropped. The result goes through ``policy.apply`` again,
+    so OCR text is scrubbed exactly like UI Automation text.
+    """
+    from .snapshot import TextBlock
+    picked, skipped = choose(snap, policy, match, max_windows)
+    excl = excluded_fn(policy)
+    report = dict(windows=[], skipped=[dict(hwnd=h, why=s) for h, s in skipped.items()])
+    budget = max_pixels
+    for w in picked:
+        t0 = time.perf_counter()
+        cap = capture.masked_window(snap, w, excl)
+        if cap is None:
+            report["windows"].append(dict(hwnd=w.hwnd, title=w.title, note="not on screen"))
+            continue
+        img, origin, masked = cap
+        if img.shape[0] * img.shape[1] > budget:
+            report["windows"].append(dict(hwnd=w.hwnd, title=w.title, note="over this call's pixel budget"))
+            continue
+        budget -= img.shape[0] * img.shape[1]
+        reply = worker.ocr([img])
+        res = reply["images"][0]
+        lines = res["lines"]
+        b = np.array([l["box"] for l in lines], np.float32).reshape(-1, 4)
+        b[:, [0, 2]] += origin.left
+        b[:, [1, 3]] += origin.top
+        keep = _overlap(b, capture.mask_rects(snap, w, excl)) < 0.5
+        added = [TextBlock(l["text"], Rect(*(int(v) for v in bb)), "ocr")
+                 for l, bb, k in zip(lines, b.tolist(), keep) if k]
+        w.text = list(w.text) + added
+        report["windows"].append(dict(
+            hwnd=w.hwnd, title=w.title, process=w.process, ocr_backend=reply.get("ocr_backend"),
+            masked_fraction=round(masked, 3), lines=len(added), dropped_masked=int((~keep).sum()),
+            det_ms=res.get("det_ms"), rec_ms=res.get("rec_ms"),
+            total_ms=round((time.perf_counter() - t0) * 1000, 1)))
+    red, counts = policy.apply(snap)
+    report["secrets_withheld"] = counts["secrets_withheld"]
+    return red, report

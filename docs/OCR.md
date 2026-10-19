@@ -1,7 +1,35 @@
-# OCR on the NPU: where it stands
+# OCR: on the CPU now, on the NPU later
 
-Not shipped. This page records what was measured toward it and what blocks it. Everything is CPU and NPU on
-Desktop 2 (Ryzen 7 8700G, Phoenix), 2026-10-19.
+`ocr_windows` (0.0.6) reads text from window pixels, with PP-OCRv5 mobile detection and recognition, both on the
+CPU inside the vision worker. This page records what was measured, and what still keeps the recognizer off the
+NPU. Everything is CPU and NPU on Desktop 2 (Ryzen 7 8700G, Phoenix), 2026-10-19.
+
+## Getting the models
+Into `models/ocr/` (git-ignored; `IGNITE_SCRIBE_OCR_DIR` points elsewhere). Both models are Apache-2.0.
+- **Detector:** `ppocrv5_det.onnx` from `ilaylow/PP_OCRv5_mobile_onnx`, saved as `ppocrv5_mobile_det.onnx`.
+- **Recognizer:** `languages/english/rec.onnx` from `monkt/paddleocr-onnx`, saved as `en_ppocrv5_rec.onnx`.
+- **Characters:** `dict.txt` from the same folder as the recognizer.
+
+## The pipeline (`ocr_pipeline.py`)
+1. **Capture:** the same masked capture as the vision stage.
+2. **Detect:** the DBNet detector at the window's resolution, capped at 1920 on the longer side.
+3. **Boxes:** axis-aligned, grown by DB's unclip distance. Boxes on one row closer than their height are joined:
+   the detector splits a row at every wide space, and each piece costs a recognizer call.
+4. **Recognize:** each box in reading order, BGR as the model was trained, at height 48 and a width padded to 32.
+5. **Return:** lines map to screen pixels, and lines lying under masked areas are dropped.
+6. **Redact:** `Policy.apply` scrubs the result like UI Automation text.
+
+## End to end
+- **Synthetic pages:** `tools/ocr_page_eval.py`, 20 pages of 1280x800 with 421 GDI lines.
+  - Line recall 0.998, CER 0.0040 over all truth characters, 1 spurious line.
+  - 274 ms a page: 109 ms detection, 162 ms recognition.
+  - Without row merging: CER 0.0075 and 8 spurious lines.
+- **A real window** (`tools/ocr_vs_uia.py`): a 1936x1048 Windows Terminal, whose UI Automation Text pattern is
+  ground truth for its pixels. Numbers only; no text is printed or kept.
+  - Each OCR line is scored against the closest substring of a UIA line, with whitespace runs collapsed.
+  - Three reads: **CER 0.0067-0.0078**, 67-75 % of lines exact, 1.24-1.32 s per call on the CPU.
+  - Before row merging, the same check read 252 fragments for 57 rows.
+  - The terminal was showing a live session, so its content moved between the two reads.
 
 ## The recognizer
 PP-OCRv5 mobile, English (`en_PP-OCRv5_mobile_rec`, Apache-2.0; the ONNX conversion from
@@ -87,6 +115,7 @@ ignite-xdna session with repros. They are engine work, and not started.
 The other route is an engine-native recognizer, trained with quantization in the loop: a GPU job for Desktop 1.
 
 ## Not done
-- Text-line detection: PP-OCRv5's detector is a DBNet with bilinear upsampling, not surveyed yet.
-- The OCR stage in the server.
-- Any accuracy on real screens.
+- The recognizer on the NPU (above). The detector stays on the CPU too: it is a DBNet with ConvTranspose,
+  Resize and ten squeeze-excite blocks, none of which the engine runs; not surveyed further.
+- Width buckets for fixed-width NPU builds (`ocr_pipeline.bucket`). The CPU model takes any width.
+- Accuracy on real screens beyond one terminal window.

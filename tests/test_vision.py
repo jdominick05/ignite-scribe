@@ -140,3 +140,36 @@ def test_mcp_find_ui_elements_over_fakes(monkeypatch):
     d = json.loads(s.call("find_ui_elements", {"format": "json"}))
     assert d["vision"]["windows"][0]["kept"] == 3 and d["windows"][0]["elements"][0]["source"] == "npu"
     assert not snap.windows[0].elements                       # the source snapshot was not written into
+
+
+class FakeOcrWorker(FakeWorker):
+    def ocr(self, images):
+        self.calls.append(("ocr", [i.shape for i in images]))
+        lines = [dict(box=[100, 100, 300, 120], text="Quarterly report", score=0.98),
+                 dict(box=[100, 200, 500, 220], text="token sk-abcdefghijklmnopqrstuv1234 here", score=0.97),
+                 dict(box=[10, 10, 40, 40], text="under the window above", score=0.95)]
+        return dict(ok=True, ocr_backend="cpu", images=[dict(lines=lines, det_ms=1.0, rec_ms=2.0)])
+
+
+def test_mcp_ocr_windows_scrubs_and_drops_masked(monkeypatch):
+    from ignite_scribe import capture, vision_client
+    from ignite_scribe import vision_stage as S
+    from ignite_scribe.mcp_server import Server
+    target = win(1, 1, "Canvas", rect=Rect(1000, 500, 1640, 1140), notes=[S.THIN], focused=True)
+    above = win(2, 0, "Above", rect=Rect(990, 490, 1050, 550), text=[TextBlock("described", Rect(990, 490, 1050, 550))])
+    snap = Snapshot.now([above, target], [Rect(0, 0, 2560, 1440)])
+    monkeypatch.setattr(vision_client, "ocr_available", lambda cfg=None: (True, ""))
+    monkeypatch.setattr(capture, "elevated", lambda pid: False)
+    monkeypatch.setattr(capture, "masked_window", lambda s, w, ex: (np.zeros((640, 640, 3), np.uint8), w.rect, 0.01))
+    s = Server(lambda text=True, max_windows=6: snap, Policy())
+    s.vision = FakeOcrWorker()
+    d = json.loads(s.call("ocr_windows", {"format": "json"}))
+    w = next(x for x in d["windows"] if x["hwnd"] == 1)
+    texts = [b["text"] for b in w["text"] if b["source"] == "ocr"]
+    assert texts[0] == "Quarterly report"
+    assert "sk-abcdefghijklmnopqrstuv1234" not in json.dumps(d) and len(texts) == 2   # scrubbed, masked one dropped
+    assert d["ocr"]["secrets_withheld"] == 1 and d["ocr"]["windows"][0]["dropped_masked"] == 1
+    assert w["text"][0]["rect"]["left"] == 1100                                    # mapped to screen pixels
+    assert not snap.windows[1].text                                                 # the source was not written
+    md = s.call("ocr_windows", {})
+    assert "[ocr] Quarterly report" in md and "1 secrets withheld" in md
