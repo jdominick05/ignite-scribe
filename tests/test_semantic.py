@@ -163,3 +163,57 @@ def test_mcp_semantic_mode_and_status(tmp_path):
         assert sem["index"]["vectors"] == 3 and sem["worker"]["backend"] == "fake"
     finally:
         s.close()
+
+
+def _record_one(h, title, line, t=None):
+    t = time.time() - 2 if t is None else t
+    before = h.stats.get("passages_written", 0)
+    h.record([content(t, 9, title, "app.exe", [line], 1)])
+    wait(lambda: h.stats.get("passages_written", 0) > before)
+
+
+def test_index_keeps_working_after_purge(hist):
+    w = FakeWorker()
+    _record_one(hist, "Old", "old words here")
+    S.Indexer(hist, w).run_once()
+    hist.purge()
+    _record_one(hist, "Fresh", "violet harbour lighthouse")
+    assert hist.index_status(S.MODEL)["backlog_passages"] == 1
+    S.Indexer(hist, w).run_once()
+    assert S.search(hist, w, "violet harbour lighthouse")["hits"][0]["title"] == "Fresh"
+
+
+def test_index_keeps_working_after_everything_expired(tmp_path):
+    w = FakeWorker()
+    db = tmp_path / "e.db"
+    h = H.History(db, flush_s=0.05)
+    old = time.time() - 8 * 86400
+    cid = h._write("passages", old, old, 1, [dict(t0=old, t1=old, hwnd=1, title="Old", process="a.exe", text="x")])
+    h.add_vectors(S.MODEL, cid, old, old, [dict(i=0, t0=old, t1=old, title="Old", process="a.exe")],
+                  w.embed(["x"]))
+    h.close()
+    h = H.History(db, flush_s=0.05)                       # the open prunes everything
+    h.passages = Passages(span_s=1)
+    try:
+        assert h.status()["chunks"] == 0
+        _record_one(h, "Fresh", "violet harbour lighthouse")
+        assert h.index_status(S.MODEL)["backlog_passages"] == 1
+        S.Indexer(h, w).run_once()
+        assert S.search(h, w, "violet harbour lighthouse")["hits"][0]["title"] == "Fresh"
+    finally:
+        h.close()
+
+
+def test_old_files_migrate_to_never_reused_ids(tmp_path):
+    import sqlite3
+    db = tmp_path / "old.db"
+    c = sqlite3.connect(db)
+    c.executescript("CREATE TABLE chunks (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, t0 REAL NOT NULL, "
+                    "t1 REAL NOT NULL, n INTEGER NOT NULL, blob BLOB NOT NULL);")
+    c.close()
+    h = H.History(db)
+    try:
+        sql = h.db.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks'").fetchone()[0]
+        assert "AUTOINCREMENT" in sql.upper()
+    finally:
+        h.close()

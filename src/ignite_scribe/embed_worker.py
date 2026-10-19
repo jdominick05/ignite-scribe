@@ -4,7 +4,7 @@
 
 ``semantic.EmbedWorker`` starts it on demand (the same interpreter as the server, with the ``embed`` extra) and
 stops it when idle. Frames are those of ``npu_worker``: a 4-byte little-endian length, a JSON line, raw bytes.
-- ``{"op": "ping"}`` -> backend (``dml`` or ``cpu``) and why;
+- ``{"op": "ping"}`` -> backend (``dml`` or ``cpu``; none until the first embed opens the GPU session) and why;
 - ``{"op": "embed", "texts": [...]}`` -> raw float16 [n, 384] passage vectors;
 - ``{"op": "search", "query": str, "n": N, "k": K}`` + raw float16 [N, 384] -> the K best rows and scores;
 - EOF on stdin (the parent closed it or died) -> the process exits, releasing the GPU.
@@ -32,9 +32,15 @@ def main(argv=None) -> int:
         pass
     d = model_dir()
     f16 = (d / "model_fp16.onnx").is_file()
-    passages = Embedder(d, device="dml", model_file="model_fp16.onnx" if f16 else "model.onnx")
-    queries = None
+    passages = queries = None              # each opened on first use: a session that only searches never opens the GPU
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+
+    def device():
+        if passages is None:
+            return dict(backend=None, reason="the GPU session opens on the first embed", precision=None)
+        return dict(backend=passages.backend, reason=passages.reason,
+                    precision="fp16" if f16 and passages.backend == "dml" else "fp32")
+
     while True:
         msg = read_frame(stdin)
         if msg is None:
@@ -43,11 +49,12 @@ def main(argv=None) -> int:
         try:
             op = h.get("op")
             if op == "ping":
-                write_frame(stdout, dict(ok=True, backend=passages.backend, reason=passages.reason,
-                                         precision="fp16" if f16 and passages.backend == "dml" else "fp32"))
+                write_frame(stdout, dict(ok=True, **device()))
             elif op == "embed":
+                if passages is None:
+                    passages = Embedder(d, device="dml", model_file="model_fp16.onnx" if f16 else "model.onnx")
                 v = passages.encode(h["texts"]).astype(np.float16)
-                write_frame(stdout, dict(ok=True, n=len(v), dim=DIM), v.tobytes())
+                write_frame(stdout, dict(ok=True, n=len(v), dim=DIM, **device()), v.tobytes())
             elif op == "search":
                 if queries is None:
                     queries = Embedder(d, device="cpu", threads=4)

@@ -39,8 +39,8 @@ from . import aesgcm, dpapi
 from .passages import Passages
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS chunks (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, t0 REAL NOT NULL, t1 REAL NOT NULL,
-                                   n INTEGER NOT NULL, blob BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS chunks (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, t0 REAL NOT NULL,
+                                   t1 REAL NOT NULL, n INTEGER NOT NULL, blob BLOB NOT NULL);
 CREATE INDEX IF NOT EXISTS chunks_t ON chunks (kind, t1);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 """
@@ -109,6 +109,7 @@ class History:
         self.db.execute("PRAGMA journal_mode = WAL")
         self.db.execute("PRAGMA secure_delete = ON")      # deleted chunks are overwritten, not left in free pages
         self.db.executescript(SCHEMA)
+        self._migrate()
         self._lockfile = None
         self.recorder = record and self._take_lock()
         self.on_recorder = None
@@ -128,6 +129,26 @@ class History:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="ignite-scribe-history", daemon=True)
         self._thread.start()
+
+    def _migrate(self):
+        """Chunk ids must never be reused (the semantic index marks progress by id): files made before 0.0.8
+        lack AUTOINCREMENT, so their table is rebuilt once. Rows keep their ids; the seals do not cover ids."""
+        with self._db_lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                sql = self.db.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks'").fetchone()[0]
+                if "AUTOINCREMENT" not in sql.upper():
+                    self.db.execute("ALTER TABLE chunks RENAME TO chunks_old")
+                    self.db.execute(SCHEMA.split(";")[0])
+                    self.db.execute("INSERT INTO chunks (id, kind, t0, t1, n, blob) "
+                                    "SELECT id, kind, t0, t1, n, blob FROM chunks_old")
+                    self.db.execute("DROP TABLE chunks_old")
+                    self.db.execute("DROP INDEX IF EXISTS chunks_t")
+                    self.db.execute("CREATE INDEX chunks_t ON chunks (kind, t1)")
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
 
     # ---- the recorder lock and the key ------------------------------------------------------------------------
     def _take_lock(self) -> bool:
@@ -373,6 +394,7 @@ class History:
             self._pending = []
         with self._db_lock:
             n = self.db.execute("DELETE FROM chunks").rowcount
+            self.db.execute("DELETE FROM meta WHERE k LIKE 'embedded:%'")
             self._aead.close()
             self._aead = aesgcm.AesGcm(self._data_key(new=True))
             self.db.execute("VACUUM")

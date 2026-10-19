@@ -133,7 +133,9 @@ class EmbedWorker:
         return h, out
 
     def embed(self, texts: list[str]) -> bytes:
-        return self.request(dict(op="embed", texts=texts))[1]
+        h, out = self.request(dict(op="embed", texts=texts))
+        self.backend, self.reason, self.precision = h.get("backend"), h.get("reason"), h.get("precision")
+        return out
 
     def rank(self, query: str, vecs: bytes, k: int) -> tuple[list[int], list[float]]:
         h, _ = self.request(dict(op="search", query=query, n=len(vecs) // (2 * DIM), k=k), vecs)
