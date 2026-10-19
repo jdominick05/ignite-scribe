@@ -158,11 +158,18 @@ def free_rects(r: Rect, masks: list[Rect]) -> list[Rect]:
     return out
 
 
-def masked_window(snap: Snapshot, target: Window, excluded) -> tuple[np.ndarray, Rect, float] | None:
+def masked_window(snap: Snapshot, target: Window, excluded,
+                  region: Rect | None = None) -> tuple[np.ndarray, Rect, float] | None:
     """-> (RGB pixels of the target's visible rectangle with every mask area PAD grey, that rectangle, masked
     fraction) or None. Masked areas are never copied from the screen: only the free rectangles are blitted onto
-    a grey canvas, so an excluded window's pixels never enter this process."""
+    a grey canvas, so an excluded window's pixels never enter this process. ``region`` (screen pixels) limits
+    the copy to that part of the window (always-on OCR reads only what changed)."""
     r = clip(target.rect, snap.monitors)
+    if r is not None and region is not None:
+        r = Rect(max(r.left, region.left), max(r.top, region.top), min(r.right, region.right),
+                 min(r.bottom, region.bottom))
+        if r.width <= 0 or r.height <= 0:
+            r = None
     if r is None:
         return None
     img = np.full((r.height, r.width, 3), PAD, np.uint8)

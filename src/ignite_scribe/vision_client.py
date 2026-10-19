@@ -44,7 +44,8 @@ def config() -> dict:
                 onnx=env("IGNITE_SCRIBE_ONNX", str(DEFAULT_ONNX)),
                 backend=env("IGNITE_SCRIBE_VISION_BACKEND", "auto"),
                 ocr_det=str(ocr_dir / "ppocrv5_mobile_det.onnx"), ocr_rec=str(ocr_dir / "en_ppocrv5_rec.onnx"),
-                ocr_dict=str(ocr_dir / "dict.txt"))
+                ocr_dict=str(ocr_dir / "dict.txt"),
+                ocr_rec_container=env("IGNITE_SCRIBE_OCR_REC_CONTAINER", str(ROOT / "build" / "scriberec.ignite")))
 
 
 def ocr_available(cfg: dict | None = None) -> tuple[bool, str]:

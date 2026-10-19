@@ -49,8 +49,8 @@ events in memory only, unless history is on.
 **History is opt-in, encrypted, and kept 7 days.** Off unless `IGNITE_SCRIBE_HISTORY=1` or the policy file sets
 `"history": true`; then the MCP server records from its start until its client exits.
 - It records only what the watcher already redacted: change events and, while the screen changes, a snapshot every
-  5 minutes. Excluded windows appear without title or content, and secrets are already scrubbed. No pixels, and no
-  OCR text.
+  5 minutes. Excluded windows appear without title or content, and secrets are already scrubbed. No pixels; OCR
+  text only from always-on OCR, when that is on too (per-call `ocr_windows` results are never recorded).
 - The file is `%LOCALAPPDATA%\ignite-scribe\history.db` (`IGNITE_SCRIBE_HISTORY_DB` overrides it). Each chunk is
   sealed with AES-256-GCM (Windows CNG) under a random key that is stored only wrapped with DPAPI for your Windows
   account: another account, or the file copied to another machine, cannot read it.
@@ -69,7 +69,19 @@ events in memory only, unless history is on.
   from `BAAI/bge-small-en-v1.5` (its `onnx/` folder) in `models/embed/bge-small-en-v1.5/`, then
   `python tools/make_embed_fp16.py` (needs `onnx onnxconverter-common`) for the faster fp16 copy.
 
-**Vision reads pixels, and only when called.**
+**Always-on OCR (opt-in, NPU only; waiting for the NPU recognizer).** `IGNITE_SCRIBE_ALWAYS_ON=1` or
+`"always_on_ocr": true` in the policy. One server per machine reads, as their pixels change, the text of windows UI
+Automation cannot describe, and adds it to the live state (and to history, when that is on).
+- It reads only the changed area of such a window, at most every 2 s per window, within an NPU time budget, with
+  the same masking as `ocr_windows`. The text is redacted like any other.
+- It runs only with the recognizer on the NPU, never as a constant CPU load; until that build exists it stays
+  paused and `scribe_status` says why.
+- It pauses, holding no NPU context, while an ignite-xdna NPU measurement asks for a quiet device (its
+  `npu-quiet.<pid>.request` files), on battery, and after `python -m ignite_scribe pause` (until `resume`).
+  NPU programs that do not write a quiet request (a direct Ignition run, an ad-hoc probe) are not seen, and
+  would share the device with it.
+
+**Vision reads pixels when called, or always-on when that is enabled.**
 - `find_ui_elements` and `ocr_windows` copy the on-screen pixels of the windows they look at, in memory, never
   to disk.
 - It never copies windows above them, excluded windows, or password fields. Those areas are left grey.

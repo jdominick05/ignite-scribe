@@ -39,8 +39,11 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
    - UI element detection: OmniParser's detector is a fine-tuned YOLOv8 (AGPL), the engine's strongest
      measured case;
    - text detection and recognition (OCR): done on the CPU, `ocr_windows` (PP-OCRv5 mobile, four times fewer
-     character errors than Windows' built-in OCR). The recognizer moves to the NPU when ignite-xdna's bf16
-     datapath can run it (see OCR.md).
+     character errors than Windows' built-in OCR). The recognizer moves to the NPU as ScribeRec, a model
+     trained for the int8 engine (see OCR.md);
+   - always-on OCR (built, waiting for that recognizer; opt-in): one process per machine reads the changed
+     areas of windows UI Automation cannot describe, on the NPU only, into the live state and history. It
+     yields the device to ignite-xdna's measurements through their quiet-request files.
 5. **History** (done; opt-in): the redacted events and periodic redacted snapshots, in SQLite, sealed per chunk
    with AES-256-GCM under a DPAPI-wrapped key, kept 7 days or 200 MB. Keyword and time search, and semantic search
    over window passages (bge-small-en-v1.5; passages on the iGPU in fp16 and queries on the CPU, both in a worker
@@ -69,7 +72,7 @@ server and the hook will be its clients.
   kept 7 days or 200 MB. Agents can search it but not delete it; the CLI's `history purge` deletes it and replaces
   the key.
 - Every output carries the untrusted-content note. Screen text is data, never instructions.
-- Pixels are read only by the vision stage, only per call, and never written anywhere.
+- Pixels are read only by the vision stage, per call or (opt-in) always-on, and never written anywhere.
   - Exclusion is applied before capture: masked areas are never blitted. They cover windows above the target,
     excluded windows, and password fields.
   - Elevated windows are skipped unless `capture_elevated` is set.

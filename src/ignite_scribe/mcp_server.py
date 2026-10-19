@@ -132,6 +132,11 @@ class Server:
         self._watch_lock = threading.RLock()
         self.embedder = self.indexer = None          # semantic history (semantic.py), on the recording process
         self._index_error = None
+        from . import always_on as _always_on
+        self.always_on_wanted = _always_on.enabled(self.policy)
+        self.always = None                           # always_on.AlwaysOn, on the process holding its lock
+        self._always_lock = None
+        self._always_error = None
         self.watcher = watcher
         self.watch = watcher is not None or (source is None and os.environ.get("IGNITE_SCRIBE_WATCH", "1") != "0")
         self._watch_error = None
@@ -210,6 +215,8 @@ class Server:
         return h
 
     def close(self):
+        if self.always is not None:
+            self.always.stop()
         if self.watcher is not None and hasattr(self.watcher, "stop"):
             self.watcher.stop()
         if self.indexer is not None:
@@ -219,12 +226,40 @@ class Server:
         if self.history is not None:
             self.history.close()
 
+    def _vision_worker(self):
+        from . import vision_client
+        if self.vision is None:
+            self.vision = vision_client.VisionWorker()
+        return self.vision
+
+    def start_always_on(self):
+        """Always-on OCR, when wanted, on the one process that gets its lock (others leave it to that one)."""
+        from . import always_on
+        if not self.always_on_wanted or self.always is not None or not self.vision_enabled:
+            return
+        if self._always_lock is None:
+            self._always_lock = always_on.take_lock(always_on.SCRIBE_DIR / "always-on.lock")
+            if self._always_lock is None:
+                self._always_error = "another ignite-scribe process runs always-on OCR"
+                return
+        w = self._watcher()
+        if w is None:
+            self._always_error = "needs the watcher (IGNITE_SCRIBE_WATCH is 0, or it failed to start)"
+            return
+        self.always = always_on.AlwaysOn(w, self.policy, self._vision_worker).start()
+
     def _vision_snapshot(self, available) -> Snapshot:
         """A private copy of the current redacted state for a vision tool, with the worker ready to start."""
         import copy
-        from . import vision_client
+        from . import always_on, vision_client
         if not self.vision_enabled:
             raise RuntimeError("vision is off (IGNITE_SCRIBE_VISION=0)")
+        q = always_on.quiet_requests()
+        if q:
+            if self.vision is not None:
+                self.vision.close()
+            raise RuntimeError("the NPU is reserved for a measurement (" +
+                               ", ".join(str(r.get("reason", r["pid"])) for r in q) + "); try again after it")
         ok, why = available()
         if not ok:
             raise RuntimeError(f"vision unavailable: {why}")
@@ -234,9 +269,15 @@ class Server:
             snap, _, _ = w.snapshot()
         if snap is None:
             snap, _ = self._snap()
-        if self.vision is None:
-            self.vision = vision_client.VisionWorker()
+        self._vision_worker()
         return copy.deepcopy(snap)                  # the watcher's state is shared; never write into it
+
+    def _always_status(self) -> dict:
+        if self.always is not None:
+            return self.always.status()
+        return dict(running=False, enabled=self.always_on_wanted, error=self._always_error,
+                    note=None if self.always_on_wanted else
+                    "off (opt-in: IGNITE_SCRIBE_ALWAYS_ON=1 or \"always_on_ocr\": true in the policy)")
 
     def call(self, name: str, args: dict):
         if name == "scribe_status":
@@ -267,7 +308,7 @@ class Server:
                     worker=self.embedder.status() if self.embedder is not None else None)
             return dict(version=__version__,
                         sources=["windows"] + (["uia"] if uia.available() else ["uia unavailable (install [uia])"]),
-                        watch=watch, vision=vision, history=hist,
+                        watch=watch, vision=vision, history=hist, always_on=self._always_status(),
                         planned=["ocr recognizer on the npu", "history embeddings on the npu"],
                         exclude_processes=self.policy.exclude_processes,
                         exclude_title_patterns=self.policy.exclude_title_patterns)
@@ -408,6 +449,7 @@ def main(server: Server | None = None, stdin=None, stdout=None) -> None:
     h = server._history() if server.history_on else None
     if h is not None and h.recorder:               # the recording process watches from its start
         server._watcher()
+    server.start_always_on()
     try:
         for line in stdin:
             if not line.strip():

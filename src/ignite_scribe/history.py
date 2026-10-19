@@ -5,7 +5,7 @@
 Opt-in: nothing is recorded unless ``IGNITE_SCRIBE_HISTORY=1``, or the policy sets ``"history": true``.
 - **What is stored:** only what the watcher already redacted. That is its change events (``changes.diff`` of
   redacted snapshots) and, every ``snapshot_s`` while the screen changes, the redacted snapshot. Excluded windows
-  appear as the placeholder title, never their content. No pixels and no OCR text (OCR runs per call). Derived
+  appear as the placeholder title, never their content. No pixels; OCR text only from always-on OCR (``always_on.py``), never per-call OCR. Derived
   from those: window passages (``passages.py``) and their embedding vectors (``semantic.py``), sealed the same way.
 - **How:** batched chunks in SQLite (``%LOCALAPPDATA%\\ignite-scribe\\history.db``; ``IGNITE_SCRIBE_HISTORY_DB``
   overrides). Each chunk is JSON, compressed, then sealed with AES-256-GCM (``aesgcm``, Windows CNG) under one

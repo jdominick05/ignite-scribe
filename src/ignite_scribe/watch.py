@@ -59,6 +59,9 @@ class Watcher:
                  budget: float = 1.5, fallback_poll: float = 2.0, duplication: bool = True, recorder=None):
         self.policy, self.max_windows, self.interval, self.budget = policy, max_windows, interval, budget
         self.recorder = recorder
+        self.pixel_dirty: dict[int, tuple] = {}    # hwnd -> (left, top, right, bottom) changed since taken (always_on)
+        self.extra_text: dict[int, list] = {}      # hwnd -> TextBlocks from always-on OCR, merged before redaction
+        self._extra_dirty = False
         self.fallback_poll, self.duplication = fallback_poll, duplication
         self.events: collections.deque = collections.deque(maxlen=history)
         self.seq = 0
@@ -108,6 +111,21 @@ class Watcher:
         return dict(seq=seq, since=since, next_since=next_since, truncated=truncated, more=more,
                     events=compact(evs) if merge else evs)
 
+    def take_pixel_dirty(self) -> dict[int, tuple]:
+        """The changed rectangle per window since the last call (from Desktop Duplication; rectangles only)."""
+        with self._lock:
+            d, self.pixel_dirty = self.pixel_dirty, {}
+        return d
+
+    def set_extra_text(self, hwnd: int, blocks: list | None):
+        """Always-on OCR's text for a window (None removes it); the window is re-read on the next refresh."""
+        with self._lock:
+            if blocks:
+                self.extra_text[hwnd] = list(blocks)
+            else:
+                self.extra_text.pop(hwnd, None)
+        self._extra_dirty = True                   # refresh soon; the window's UIA content is reused, not re-walked
+
     def status(self) -> dict:
         with self._lock:
             s = dict(self.stats)
@@ -156,11 +174,17 @@ class Watcher:
                 a = w.rect
                 if a.left < r.right and r.left < a.right and a.top < r.bottom and r.top < a.bottom:
                     self._dirty.add(w.hwnd)
+                    rr = (max(a.left, r.left), max(a.top, r.top), min(a.right, r.right), min(a.bottom, r.bottom))
+                    with self._lock:
+                        old = self.pixel_dirty.get(w.hwnd)
+                        self.pixel_dirty[w.hwnd] = rr if old is None else (
+                            min(old[0], rr[0]), min(old[1], rr[1]), max(old[2], rr[2]), max(old[3], rr[3]))
                     if a.left <= r.left and a.top <= r.top and a.right >= r.right and a.bottom >= r.bottom:
                         break
 
     def _refresh(self, full: bool = False):
         t0 = time.perf_counter()
+        self._extra_dirty = False
         snap = windows.snapshot()
         dirty, self._dirty = self._dirty, set()
         self._structure = False
@@ -190,6 +214,13 @@ class Watcher:
                 keep[w.hwnd] = cached
             self._content = keep
         snap.sources.append(f"watch ({self.dirty_source})")
+        with self._lock:
+            extra = {h: list(b) for h, b in self.extra_text.items()}
+        if extra:                                  # always-on OCR text: redacted below like UIA text
+            snap.sources.append("ocr (always-on)")
+            for w in snap.windows:
+                if w.hwnd in extra and not self.policy.excluded(w):
+                    w.text = list(w.text) + extra[w.hwnd]
         red, counts = self.policy.apply(snap)
         with self._lock:
             new = diff(self.state, red)
@@ -240,7 +271,7 @@ class Watcher:
                     if f is not None:
                         self._dirty.add(f.hwnd)
                     last_poll = now
-                if (self._dirty or self._structure) and now - last >= self.interval:
+                if (self._dirty or self._structure or self._extra_dirty) and now - last >= self.interval:
                     self._refresh()
                     last = now
                 self._cpu_now = time.thread_time()

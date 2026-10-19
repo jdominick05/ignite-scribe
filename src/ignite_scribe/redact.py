@@ -76,6 +76,7 @@ class Policy:
     exclude_title_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDE_TITLES))
     capture_elevated: bool = False   # may vision copy the pixels of elevated windows (UIA cannot read them)?
     history: bool = False            # record the redacted events and snapshots to disk (history.py)?
+    always_on_ocr: bool = False      # read changed pixels of windows UIA cannot describe, on the NPU (always_on.py)?
 
     @staticmethod
     def load(path: str | Path | None) -> Policy:
@@ -86,6 +87,7 @@ class Policy:
             p.exclude_title_patterns += d.get("exclude_title_patterns", [])
             p.capture_elevated = bool(d.get("capture_elevated", False))
             p.history = bool(d.get("history", False))
+            p.always_on_ocr = bool(d.get("always_on_ocr", False))
         return p
 
     def excluded(self, w: Window) -> bool:

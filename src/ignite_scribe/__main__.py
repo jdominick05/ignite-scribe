@@ -3,6 +3,7 @@
 """python -m ignite_scribe snapshot [--json] [--policy FILE] [--no-text]
 python -m ignite_scribe watch [--seconds N] [--policy FILE] [--raw]
 python -m ignite_scribe history {status,search,purge} [QUERY] [--since 2h]
+python -m ignite_scribe pause | resume       (always-on OCR)
 python -m ignite_scribe mcp"""
 import argparse
 import json
@@ -29,8 +30,19 @@ def main(argv=None) -> int:
     h.add_argument("--since", help="ISO 8601 or relative (90m, 2h, 1d)")
     h.add_argument("--match", help="only windows whose title or process contains this")
     h.add_argument("--yes", action="store_true", help="purge without asking")
+    sub.add_parser("pause", help="pause always-on OCR (it holds no NPU context while paused)")
+    sub.add_parser("resume", help="resume always-on OCR")
     sub.add_parser("mcp", help="serve the MCP tools on stdio")
     a = ap.parse_args(argv)
+    if a.cmd in ("pause", "resume"):
+        from .always_on import PAUSE_FILE
+        if a.cmd == "pause":
+            PAUSE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            PAUSE_FILE.write_bytes(b"")
+        else:
+            PAUSE_FILE.unlink(missing_ok=True)
+        print(f"always-on OCR {'paused' if a.cmd == 'pause' else 'resumed'}", file=sys.stderr)
+        return 0
     if a.cmd == "mcp":
         from .mcp_server import main as serve
         serve()
