@@ -21,6 +21,10 @@ Printed, aggregated over all samples (no text, no crops):
 - ink padding above and below each crop;
 - the top substitution pairs (reference char -> read char, with counts; '' is an insertion or deletion);
 - whether each ScribeRec space error sits in a run of 2+ spaces in the raw UIA line, or at a single space;
+- edge ink: the share of crops with ink in the outer 3 px rows (top, bottom) and columns (left, right), for all
+  lines and for the lines ScribeRec (and the candidate) got wrong; the background's noise;
+- where insertions sit in the read line (first 2, last 2 characters, or the middle);
+- the row pitch (median gap between line boxes' tops: the terminal's cell height) and crop height over it;
 - the terminal's renderer settings (font, size, antialiasing, graphics API) and the window's DPI.
 
 Run with the vision worker's Python (3.13, OpenCV and ONNX Runtime), on the CPU:
@@ -70,8 +74,8 @@ def norm_runs(s: str) -> tuple[str, list[int]]:
 
 
 def align(hyp: str, truth: str) -> tuple[int, list[tuple[str, str, int]]]:
-    """Edit distance from ``hyp`` to the closest substring of ``truth``, and its edits as (ref, read, truth index)
-    (index -1 for an insertion)."""
+    """Edit distance from ``hyp`` to the closest substring of ``truth``, and its edits as (ref, read, truth index,
+    hypothesis index) (truth index -1 for an insertion)."""
     n, m = len(hyp), len(truth)
     d = np.zeros((n + 1, m + 1), np.int32)
     d[:, 0] = np.arange(n + 1)
@@ -83,20 +87,43 @@ def align(hyp: str, truth: str) -> tuple[int, list[tuple[str, str, int]]]:
     while i > 0 and j > 0:
         if d[i, j] == d[i - 1, j - 1] + (hyp[i - 1] != truth[j - 1]):
             if hyp[i - 1] != truth[j - 1]:
-                edits.append((truth[j - 1], hyp[i - 1], j - 1))
+                edits.append((truth[j - 1], hyp[i - 1], j - 1, i - 1))
             i, j = i - 1, j - 1
         elif d[i, j] == d[i - 1, j] + 1:
-            edits.append(("", hyp[i - 1], -1))
+            edits.append(("", hyp[i - 1], -1, i - 1))
             i -= 1
         elif d[i, j] == d[i, j - 1] + 1:
             if d[i, 0] == d[i, j]:                    # the free start: stop taking deletions before the match
                 break
-            edits.append((truth[j - 1], "", j - 1))
+            edits.append((truth[j - 1], "", j - 1, i))
             j -= 1
         else:
             break
-    edits += [("", hyp[k], -1) for k in range(i)]
+    edits += [("", hyp[k], -1, k) for k in range(i)]
     return int(d[n, int(np.argmin(d[n]))]) if m else n, edits
+
+
+def edges(rgb: np.ndarray, band: int = 3, thr: int = 24) -> dict:
+    """Ink in the outer ``band`` rows / columns of a crop: pixels differing from the crop's modal colour by more
+    than ``thr`` in any channel. Also the background's noise (std of the pixels within ``thr`` of the mode)."""
+    px = rgb.reshape(-1, 3).astype(np.int32)
+    q = px // 8
+    keys, counts = np.unique(q[:, 0] * 1024 + q[:, 1] * 32 + q[:, 2], return_counts=True)
+    k = keys[counts.argmax()]
+    mode = np.array([k // 1024, (k // 32) % 32, k % 32]) * 8 + 4
+    ink = (np.abs(rgb.astype(np.int32) - mode) > thr).any(2)
+    bg = px[~ink.reshape(-1)]
+    b = min(band, max(1, rgb.shape[0] // 4))
+    return dict(top=bool(ink[:b].any()), bottom=bool(ink[-b:].any()), left=bool(ink[:, :band].any()),
+                right=bool(ink[:, -band:].any()), bg_std=float(bg.std()) if len(bg) else 0.0)
+
+
+def _shares(d: dict) -> dict:
+    out = {k: round(sum(v) / len(v), 3) for k, v in d.items() if k != "bg_std" and v}
+    if d.get("bg_std"):
+        out["bg_std_median"] = round(float(np.median(d["bg_std"])), 2)
+    out["n"] = len(next(iter(d.values()), []))
+    return out
 
 
 def padding(rgb: np.ndarray) -> tuple[int, int]:
@@ -186,6 +213,9 @@ def main():
     pads, n_lines, skipped, used, dpis = [], 0, 0, 0, set()
     unmatched = collections.Counter()
     space_err = collections.Counter()
+    edge_all, edge_err = collections.defaultdict(list), {k: collections.defaultdict(list) for k in
+                                                         ("scriberec", "candidate")}
+    ins_pos, pitches, rel_h = collections.Counter(), [], []
     snap0 = windows.snapshot()
     targets = [w for w in snap0.windows if a.match.lower() in w.process.lower() and not w.minimized]
     for target in targets:
@@ -210,11 +240,21 @@ def main():
             rgb = res[0]
             lines = pp(rgb)
             crops = [rgb[l.box[1]:l.box[3], l.box[0]:l.box[2]] for l in lines]
+            tops = sorted(l.box[1] for l in lines)
+            gaps = [b - a for a, b in zip(tops, tops[1:]) if 8 <= b - a <= 80]
+            pitch = float(np.median(gaps)) if gaps else None
+            if pitch:
+                pitches.append(pitch)
+                rel_h += [round(c.shape[0] / pitch, 1) for c in crops]
+            crop_edges = [edges(c) for c in crops]
+            for e in crop_edges:
+                for key, v in e.items():
+                    edge_all[key].append(v)
             reads = dict(ppocr=[l.text for l in lines], scriberec=[t for t, _ in sr.read_many(crops)],
                          scriberec_ascii=[t for t, _ in sr_ascii.read_many(crops)],
                          **{k: [t for t, _ in r.read_many(crops)] for k, r in extra.items()})
             for k, texts in reads.items():
-                for crop, t in zip(crops, texts):
+                for ci, (crop, t) in enumerate(zip(crops, texts)):
                     t = norm(t)
                     if not t:
                         continue
@@ -224,13 +264,19 @@ def main():
                         continue
                     stats[k][0] += best[0]
                     stats[k][1] += len(t)
+                    if k in edge_err and best[0] > 0:
+                        for key, v in crop_edges[ci].items():
+                            edge_err[k][key].append(v)
                     if k == a.subs_of:
                         h = crop.shape[0]
                         bin_ = f"{h // 4 * 4}-{h // 4 * 4 + 3}px"
                         by_h[bin_][0] += best[0]
                         by_h[bin_][1] += len(t)
-                        subs.update((r, h) for r, h, _ in best[1])
-                        for r, h, j in best[1]:
+                        subs.update((r, h) for r, h, _, _ in best[1])
+                        for r, h, _, i in best[1]:
+                            if r == "":
+                                ins_pos["first_2" if i < 2 else "last_2" if i >= len(t) - 2 else "middle"] += 1
+                        for r, h, j, _ in best[1]:
                             if r == " ":
                                 space_err["in_run_of_2+" if runs[j] >= 2 else "single_space"] += 1
             for crop in crops:
@@ -251,6 +297,10 @@ def main():
                             bottom_median=bot[len(bot) // 2] if bot else None,
                             top_zero_share=round(sum(1 for x in top if x == 0) / max(len(top), 1), 3),
                             bottom_zero_share=round(sum(1 for x in bot if x == 0) / max(len(bot), 1), 3)),
+        edge_ink_share=dict(all_lines=_shares(edge_all),
+                            **{f"{k}_error_lines": _shares(v) for k, v in edge_err.items() if v}),
+        insertion_position=dict(ins_pos), row_pitch_px=sorted(round(x, 1) for x in pitches),
+        crop_height_over_row_pitch=dict(collections.Counter(rel_h).most_common(8)),
         scriberec_space_errors=dict(space_err), scorer="whitespace runs collapsed to one space on both sides",
         scriberec_top_substitutions=[dict(ref=r, read=h, n=n) for (r, h), n in subs.most_common(20)],
         dpi=sorted(dpis), terminal=terminal_settings(),
