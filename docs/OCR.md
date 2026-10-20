@@ -1,8 +1,9 @@
-# OCR: on the CPU now, on the NPU later
+# OCR: the detector on the CPU, the recognizer on the NPU
 
-`ocr_windows` (0.0.6) reads text from window pixels, with PP-OCRv5 mobile detection and recognition, both on the
-CPU inside the vision worker. This page records what was measured, and what still keeps the recognizer off the
-NPU. Everything is CPU and NPU on Desktop 2 (Ryzen 7 8700G, Phoenix), 2026-10-19.
+`ocr_windows` (0.0.6) reads text from window pixels inside the vision worker. Lines are found by PP-OCRv5's
+detector on the CPU. Since release-01 (0.0.9), they are read by ScribeRec, a recognizer trained for the NPU's int8
+engine, on the NPU, with PP-OCRv5's recognizer as the CPU path. This page is the record: what was measured, and
+in what order. The early sections describe the PP-OCRv5-only stage. Everything is CPU and NPU on Desktop 2 (Ryzen 7 8700G, Phoenix), 2026-10-19.
 
 ## Getting the models
 Into `models/ocr/` (git-ignored; `IGNITE_SCRIBE_OCR_DIR` points elsewhere). Both models are Apache-2.0.
@@ -115,10 +116,13 @@ ignite-xdna session with repros. They are engine work, and not started.
 The other route is an engine-native recognizer, trained with quantization in the loop: a GPU job for Desktop 1.
 
 ## Not done
-- The recognizer on the NPU (above). The detector stays on the CPU too: it is a DBNet with ConvTranspose,
-  Resize and ten squeeze-excite blocks, none of which the engine runs; not surveyed further.
-- Width buckets for fixed-width NPU builds (`ocr_pipeline.bucket`). The CPU model takes any width.
-- Accuracy on real screens beyond one terminal window.
+- ~~The recognizer on the NPU~~: done, ScribeRec release-01 (below).
+- ~~Width buckets for fixed-width NPU builds~~: done, four buckets (320 / 640 / 960 / 1280).
+- **The detector stays on the CPU** (about 62 ms per always-on read). It is a DBNet with ConvTranspose, Resize and
+  ten squeeze-excite blocks, none of which the engine runs; not surveyed further.
+- **ScribeRec's accuracy on real screens is not measured.** The one real-window check above (a terminal against its
+  UI Automation text) predates it and used PP-OCRv5. Every ScribeRec number here is on synthetic lines.
+- **Installed copies cannot get the model yet:** release-01 and its containers live in git-ignored folders here.
 
 ## The route chosen: an engine-native recognizer (2026-10-19)
 The user chose to train a recognizer shaped for the int8 engine rather than extend the engine for PP-OCRv5. The
