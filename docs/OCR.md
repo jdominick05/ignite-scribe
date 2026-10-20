@@ -274,6 +274,7 @@ On the same 500 seed-100 lines as the table above, rendered on Desktop 2, throug
 
 | recognizer | CER | exact lines | ms per line (CPU) |
 |---|---:|---:|---:|
+| ScribeRec release-01, four NPU buckets (`build/scriberec_<W>.ignite`) | **0.00181** | **97.0 %** | 9.1 |
 | ScribeRec release-01, XINT8 backbones | **0.00181** | **97.0 %** | 18.4 |
 | ScribeRec release-01, float backbones (before the split fix) | 0.00199 | 96.6 % | 13.7 |
 | PP-OCRv5 float, own width (above) | 0.0049 | 91.8 % | 6.59 |
@@ -289,5 +290,11 @@ On the same 500 seed-100 lines as the table above, rendered on Desktop 2, throug
 - Release-01 sometimes reads a Latin capital as its Greek twin, for example Chi for X. `scriberec_rec`
   maps the 14 twins back (`latin_twins`, on by default) until a fine-tune fixes it. No seed-100 label
   contains Greek.
-- Lines are synthetic, so these are not real-world figures. The NPU run of the same check waits on the device
-  fault of 2026-10-19 (contexts refused with 0xc01e0009), and so do the four compiled buckets.
+- **On the NPU:**
+  - The four buckets come from ignite-xdna's `recipes/scriberec.toml`: 12 layers each, none on the host, and
+    each manifest's source hash matches its XINT8 backbone.
+  - They give the same CER and exact share as the CPU XINT8 path, at 9.1 ms a line (18.4 on the CPU), measured
+    through `research-lowlevel.sh --npu` on a clear host.
+  - `tools/worker_lifecycle.py --ocr` with release-01 loaded: `close()`, idle stop and parent death each leave
+    the NPU idle within 0.06 s.
+- Lines are synthetic, so these are not real-world figures.
