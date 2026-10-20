@@ -50,7 +50,7 @@ It was trained on prompts typed at chatbots. On screen text it flags ordinary em
 holds hundreds of lines, so nearly every window would be flagged. Off-the-shelf classifiers therefore do not
 ship here. The module that runs one (`injection_model.py`) stays, for evaluation and for the model below.
 
-## Tier 2: a classifier trained on screen text (planned)
+## Tier 2: a classifier trained on screen text (parked, 2026-10-19)
 
 This follows the ScribeRec route: a model trained for this domain, small and int8-friendly, so it runs exactly
 on the NPU in the vision worker. A CPU fallback exists only for measurement.
