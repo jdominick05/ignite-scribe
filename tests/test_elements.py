@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The element map (find_element): ranking, visible click points, redaction of detail, the password guard."""
 import json
+import os
 import subprocess
 import sys
 import time
@@ -218,3 +219,55 @@ def test_live_find_element_click_point_hits_the_button(button_window, monkeypatc
     box = json.loads(srv.call("find_element", {"role": "checkbox", "match": t["title"]}))["hits"]
     assert box and box[0]["name"] == t["check"] and "toggle" in box[0]["actions"]
     srv.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="UI Automation")
+@pytest.mark.skipif(os.environ.get("IGNITE_SCRIBE_CLICK_TEST") != "1",
+                    reason="moves the real mouse pointer: set IGNITE_SCRIBE_CLICK_TEST=1")
+def test_live_real_click_at_the_returned_point_toggles_the_checkbox(button_window, monkeypatch):
+    """A real mouse click (SendInput) at find_element's click point: the probe's check box must flip. The pointer
+    is put back where it was."""
+    pytest.importorskip("comtypes")
+    import ctypes
+    from ctypes import wintypes
+    monkeypatch.setenv("IGNITE_SCRIBE_WATCH", "0")
+    hwnd, t = button_window
+    srv = Server(policy=Policy())
+    hit = None
+    for _ in range(20):
+        hits = json.loads(srv.call("find_element", {"name": t["check"], "match": t["title"]}))["hits"]
+        hit = next((h for h in hits if h["window"]["hwnd"] == hwnd), None)
+        if hit is not None:
+            break
+        time.sleep(0.1)
+    srv.close()
+    assert hit is not None and hit["click_checked"]
+    if hit["click"] is None:
+        pytest.skip("something covers the probe")
+    user32 = ctypes.WinDLL("user32")
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    box = user32.WindowFromPoint(wintypes.POINT(*hit["click"]))
+    BM_GETCHECK = 0xF0
+    assert user32.SendMessageW(box, BM_GETCHECK, 0, 0) == 0
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("mi", MOUSEINPUT)]   # the union's largest member: 40 bytes on x64
+    was = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(was))
+    try:
+        user32.SetCursorPos(*hit["click"])
+        clicks = (INPUT * 2)(INPUT(0, MOUSEINPUT(0, 0, 0, 0x2, 0, 0)), INPUT(0, MOUSEINPUT(0, 0, 0, 0x4, 0, 0)))
+        assert user32.SendInput(2, clicks, ctypes.sizeof(INPUT)) == 2
+        for _ in range(40):
+            if user32.SendMessageW(box, BM_GETCHECK, 0, 0) == 1:
+                break
+            time.sleep(0.05)
+    finally:
+        user32.SetCursorPos(was.x, was.y)
+    assert user32.SendMessageW(box, BM_GETCHECK, 0, 0) == 1, hit
