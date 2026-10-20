@@ -297,4 +297,9 @@ On the same 500 seed-100 lines as the table above, rendered on Desktop 2, throug
     through `research-lowlevel.sh --npu` on a clear host.
   - `tools/worker_lifecycle.py --ocr` with release-01 loaded: `close()`, idle stop and parent death each leave
     the NPU idle within 0.06 s.
+  - The DMA completion tokens balance in the instruction streams of all four buckets and of the four
+    `icon_detect_v1*.ignite` builds: every token issued is waited for, on every shim channel of every column.
+    ignite-xdna checked this statically on 2026-10-19, after an unbalanced stream in its LLM work kept wedging
+    the device. Always-on dispatches these streams continuously. The check reads the stored streams only, not
+    anything patched in at dispatch.
 - Lines are synthetic, so these are not real-world figures.
