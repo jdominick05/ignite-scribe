@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Why OCR misreads a real window: aggregate diagnostics against the window's own UI Automation text.
 
-For each window whose process matches ``--match`` (a terminal: its Text pattern is ground truth for its pixels):
+For each window whose process or title contains ``--match`` (a terminal: its Text pattern is ground truth for
+its pixels):
 UI Automation is read, the window is captured (masked, in memory), and UI Automation is read again. Only lines
 present in both reads are ground truth, so a line that changed mid-measurement (a spinner, a clock) is not truth.
 An OCR line whose best match still has more than half its characters wrong has no counterpart in that truth: it
@@ -26,6 +27,13 @@ Printed, aggregated over all samples (no text, no crops):
 - where insertions sit in the read line (first 2, last 2 characters, or the middle);
 - the row pitch (median gap between line boxes' tops: the terminal's cell height) and crop height over it;
 - the terminal's renderer settings (font, size, antialiasing, graphics API) and the window's DPI.
+
+**The static gate** (``--static FILE``, the baseline for new ScribeRec releases): a new Windows Terminal window
+shows a tracked file (``type``, then it waits), so its text cannot change while it is measured, and it holds
+only repo text, never the user's. Its handle is found by comparing the window list before and after the
+launch; it is closed with WM_CLOSE to that handle only (the user's terminals share its process). Baseline,
+``--static docs/DESIGN.md`` on Desktop 2 (2026-10-20, 3 samples, 92 lines, 0% masked): PP-OCRv5 0.0045,
+ScribeRec release-01 0.0157, r02b 0.0198.
 
 Run with the vision worker's Python (3.13, OpenCV and ONNX Runtime), on the CPU:
 ``python tools/ocr_diag.py --match WindowsTerminal`` with ``src`` on PYTHONPATH. UI Automation comes from the
@@ -165,12 +173,33 @@ def terminal_settings() -> dict:
     return out or dict(settings="defaults (Cascadia Mono 12 pt, grayscale antialiasing)")
 
 
+def static_window(path: str) -> int:
+    """Open a new Windows Terminal window showing ``path`` (it waits 3 minutes, then exits); -> its handle."""
+    from ignite_scribe import windows
+    f = Path(path).resolve()
+    if not f.is_file():
+        raise SystemExit(f"--static: no file {f}")
+    before = {w.hwnd for w in windows.windows()}
+    script = Path(os.environ.get("TEMP", ".")) / "ignite_scribe_ocr_gate.cmd"
+    script.write_bytes(f"@echo off\r\nchcp 65001 >nul\r\ntype \"{f}\"\r\nping -n 180 127.0.0.1 >nul\r\n".encode())
+    subprocess.Popen(["wt.exe", "-w", "new", "-d", str(f.parent), "cmd", "/c", str(script)])
+    for _ in range(40):
+        new = [w for w in windows.windows() if w.hwnd not in before and "windowsterminal" in w.process.lower()]
+        if new:
+            time.sleep(2.0)                        # let it finish printing
+            return new[0].hwnd
+        time.sleep(0.5)
+    raise SystemExit("--static: the terminal window did not appear")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--match", default="WindowsTerminal")
     ap.add_argument("--samples", type=int, default=3, help="stable samples per window")
     ap.add_argument("--venv", default=str(ROOT / ".venv" / "Scripts" / "python.exe"))
     ap.add_argument("--candidate", help="another ScribeRec model directory, read on the same crops")
+    ap.add_argument("--hwnd", type=int, help="measure only this window (overrides --match)")
+    ap.add_argument("--static", metavar="FILE", help="open a new terminal showing this tracked file and measure it")
     ap.add_argument("--subs-of", default="scriberec",
                     help="whose substitutions, crop heights and space errors to report")
     a = ap.parse_args()
@@ -181,6 +210,9 @@ def main():
     from ignite_scribe.vision_client import config
     from ignite_scribe.vision_stage import excluded_fn
     cfg = config()
+    gate = static_window(a.static) if a.static else None
+    if gate:
+        a.hwnd = gate
     pp = OcrPipeline(cfg["ocr_det"], cfg["ocr_rec"], cfg["ocr_dict"], cache_size=0)
     sr = ScribeRec(cfg["ocr_rec_model"], cfg["ocr_dict"])
     sr_ascii = ScribeRec(cfg["ocr_rec_model"], cfg["ocr_dict"], charset=string.printable)
@@ -212,12 +244,16 @@ def main():
     subs = collections.Counter()
     pads, n_lines, skipped, used, dpis = [], 0, 0, 0, set()
     unmatched = collections.Counter()
+    masked = []
     space_err = collections.Counter()
     edge_all, edge_err = collections.defaultdict(list), {k: collections.defaultdict(list) for k in
                                                          ("scriberec", "candidate")}
     ins_pos, pitches, rel_h = collections.Counter(), [], []
     snap0 = windows.snapshot()
-    targets = [w for w in snap0.windows if a.match.lower() in w.process.lower() and not w.minimized]
+    m = a.match.lower()
+    targets = [w for w in snap0.windows if (m in w.process.lower() or m in w.title.lower()) and not w.minimized]
+    if a.hwnd:
+        targets = [w for w in snap0.windows if w.hwnd == a.hwnd]
     for target in targets:
         got = 0
         for _ in range(a.samples * 4):
@@ -238,6 +274,7 @@ def main():
             used += 1
             dpis.add(capture.dpi(target.hwnd))
             rgb = res[0]
+            masked.append(round(res[2], 3))
             lines = pp(rgb)
             crops = [rgb[l.box[1]:l.box[3], l.box[0]:l.box[2]] for l in lines]
             tops = sorted(l.box[1] for l in lines)
@@ -284,12 +321,15 @@ def main():
             n_lines += len(crops)
     srv.stdin.close()
     srv.wait(timeout=30)
+    if gate:
+        import ctypes
+        ctypes.windll.user32.PostMessageW(ctypes.c_void_p(gate), 0x0010, 0, 0)   # WM_CLOSE, that window only
     pads = [p for p in pads if p[0] >= 0]
     top = sorted(p[0] for p in pads)
     bot = sorted(p[1] for p in pads)
     print(json.dumps(dict(
         windows=len(targets), stable_samples=used, skipped_unstable=skipped, lines=n_lines,
-        unmatched_lines=dict(unmatched),
+        unmatched_lines=dict(unmatched), masked_fraction=masked,
         cer={k: round(e / max(c, 1), 4) for k, (e, c) in stats.items()},
         scriberec_cer_by_crop_height={k: dict(cer=round(e / max(c, 1), 4), chars=c)
                                       for k, (e, c) in sorted(by_h.items())},
