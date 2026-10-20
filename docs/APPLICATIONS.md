@@ -65,18 +65,20 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 | Always-on OCR (opt-in, NPU only) | 0.0.9 | Yields to NPU measurements, battery and pause; 1.3% of a core in the server |
 | Prompt-injection flags, pattern tier | 0.1.0 | Hidden characters, overrides (EN/DE/FR/ES), role and address patterns; 0 false positives on UI lines and benign emails |
 | Tray icon: shows when the screen is being read | 0.1.0 | Watching, reading pixels, paused or idle; pause from the menu |
+| Tray polish and live settings | after 0.1.0 | Icons with shapes (no colour key needed), every setting in the menu, applied live; the background service owns the icon |
 | One-line installer, `ignite-scribe setup`, background service | 0.1.0 | No admin rights, no Git; a per-user logon entry |
 
 ## 🔨 In progress
 
 - **Secure mode:** a prompt-injection classifier trained on screen text that runs on the iGPU only, never the CPU.
-  The scribe side is built and tested; the model is in training. Its targets were fixed before training
-  ([INJECTION.md](INJECTION.md)).
-- **Tray and settings polish:**
-  - icons with shapes, so the icon reads without colour;
-  - a key in the menu;
-  - the background service owns the tray;
-  - settings reload live, without a restart.
+  - Release-01 is measured: attacks planted in email are caught at 12% -> 43% with no false alarms; it met 4 of 7
+    pre-registered targets, and short, direct attacks are the gap ([INJECTION.md](INJECTION.md)).
+  - Scoring is incremental, at 75.6 ms per batch live.
+  - Release-02 and a download for installed copies are next.
+- **ScribeRec release-02:** a fine-tune for real screens (terminal and editor fonts, dark themes). On a real
+  terminal, release-01 has 3-4.5x the errors of PP-OCRv5 ([OCR.md](OCR.md)).
+- **A model download for installed copies:** ScribeRec, the detector and secure mode's model live only in local
+  folders today.
 
 ## 📋 Planned (in the design)
 

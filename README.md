@@ -133,7 +133,7 @@ was read.</sub>
 |---|---|---|
 | **History** | Records the *redacted* screen state: change events, and a snapshot every 5 minutes while things change. It is encrypted with a key only your Windows account can unlock, and deleted after 7 days. No screenshots, ever. | off |
 | **Always-on OCR** | Reads the text of windows UI Automation cannot describe (canvas apps, remote desktops, video), as they change, on the NPU only, while an agent is connected. It pauses on battery. | off |
-| **Secure mode** | Also checks window text for prompt injection with a classifier trained on screen text, on the iGPU only (never the CPU). Its flags add to the pattern flags a moment later. *The model is in training; until it is installed, secure mode waits.* | off |
+| **Secure mode** | Also checks window text for prompt injection with a classifier trained on screen text, on the iGPU only (never the CPU). Its flags add to the pattern flags a moment later. *Release-01 more than triples the patterns' catch rate on attacks hidden in emails (12% -> 43%) with no false alarms on ordinary email or UI text ([measured](docs/INJECTION.md#release-01-results-2026-10-19)); short, direct attacks are its weak spot. It is not downloadable yet, so secure mode waits until its model is installed.* | off |
 | **Background service** | A small process started at logon. It records history and shows the tray dot even with no agent open; agents then search the history it keeps. | on when history is |
 
 Change your answers at any time with `ignite-scribe setup`.
@@ -184,8 +184,9 @@ setting and environment variable, and exactly what each feature reads and stores
 On a PC with an AMD Ryzen AI NPU (XDNA1: Phoenix, Hawk Point), ignite-scribe can also read pixels:
 - **UI elements** (icons, buttons) in windows UI Automation cannot describe, with a detector running entirely on
   the NPU;
-- **text**, with ScribeRec, a recognizer trained for this NPU. On synthetic UI text it gets 99.8% of characters
-  right, at 9.1 ms a line;
+- **text**, with ScribeRec, a recognizer trained for this NPU: 99.8% of characters right on synthetic UI text, at
+  9.1 ms a line. On a real terminal it is still behind the CPU recognizer (97% against 99%), and a fine-tune is
+  planned ([OCR.md](docs/OCR.md));
 - **always-on OCR**. With constantly changing text on screen, the worst case, it cost 1.3% of a core in the
   server and 1.6% of the machine in the NPU worker.
 
