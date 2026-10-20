@@ -157,8 +157,8 @@ def daemon() -> int:
             if h is not None and h.recorder:
                 server._watcher()
             if tray.enabled():
-                server.beacon = tray.Beacon(server).start()
-                server.tray = tray.Tray().start()
+                server.beacon = tray.Beacon(server, service=True).start()   # agents' servers yield the tray to it
+                server.tray = tray.Tray(takeover_s=1.0).start()
             _log(json.dumps(dict(event="started", pid=os.getpid(), history=bool(h and h.recorder),
                                  tray=tray.enabled())))
             while not STOP_FILE.exists():

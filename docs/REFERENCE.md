@@ -70,10 +70,22 @@ doing. Each state has its own shape as well as its own colour:
 A red dot at its lower right means history is being recorded. Hovering shows the same in words, with history and
 always-on OCR on their own lines. Clicking opens a menu with that status, how many ignite-scribe processes are
 running, a key to the icons, and "Pause always-on OCR" when it is running (otherwise it says always-on OCR is off).
+The background service draws the icon whenever it runs; agents' servers draw it only when there is no service.
 
-Its tooltip says which, across all sessions, and whether history is recording. Click it to pause or resume
-always-on OCR, or to hide the icon. Each session writes a small status file with flags only, no screen content,
-under `%LOCALAPPDATA%\ignite-scribe\status`. `IGNITE_SCRIBE_TRAY=0` turns the icon off.
+**Settings from the tray.** The menu's Settings submenu changes what `ignite-scribe setup` sets, in the same
+policy file: history, always-on OCR, secure mode, whether vision may read administrator windows, and running in
+the background from logon. Under "Apps never read" you can exclude any app with an open window, or include one
+again; the built-in exclusions are listed and cannot be removed. Window-title patterns and anything else are
+edited in the policy file itself ("Edit the policy file..."). Always-on OCR and secure mode can be chosen before
+their models are installed, as in setup; the menu says so, and they start once the model is there.
+
+Every running ignite-scribe process applies a change within about two seconds, without a restart. Turning
+history off closes the store in every process, so none goes on recording or takes recording over. Turning
+always-on OCR or secure mode off stops it. A new exclusion applies to what the watcher shows at once. A process
+from an older version cannot reload its settings; the menu names it, so you can restart its agent session.
+
+Each session writes a small status file with flags only, no screen content, under
+`%LOCALAPPDATA%\ignite-scribe\status`. `IGNITE_SCRIBE_TRAY=0` turns the icon off.
 
 **While it watches.** The MCP server starts its watcher on the first screen tool call and keeps it until the
 client exits; `IGNITE_SCRIBE_WATCH=0` turns it off. It learns *where* the screen changed from Desktop

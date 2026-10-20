@@ -540,7 +540,7 @@ def main(server: Server | None = None, stdin=None, stdout=None) -> None:
         if tray.enabled():                         # the notification-area icon: when the screen is being read
             try:
                 server.beacon = tray.Beacon(server).start()
-                server.tray = tray.Tray().start()
+                server.tray = tray.Tray(yield_to_service=True).start()      # the background service owns it
             except Exception as e:  # noqa: BLE001 - the icon is a convenience; the server runs without it
                 print(f"tray unavailable: {e}", file=sys.stderr)
     try:
