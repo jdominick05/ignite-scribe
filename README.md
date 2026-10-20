@@ -88,6 +88,17 @@ rule):
 
 Each polling turn also re-reads the agent's context, which this table does not count.
 
+**The tray icon.** While any MCP session runs, one dot in the notification area shows what ignite-scribe is
+doing:
+- blue: watching windows and their UI Automation text;
+- amber: reading pixels (`find_ui_elements`, `ocr_windows`, always-on OCR);
+- white: always-on OCR is paused;
+- grey: not reading the screen.
+
+Its tooltip says which, across all sessions, and whether history is recording. Click it to pause or resume
+always-on OCR, or to hide the icon. Each session writes a small status file with flags only, no screen content,
+under `%LOCALAPPDATA%\ignite-scribe\status`. `IGNITE_SCRIBE_TRAY=0` turns the icon off.
+
 **While it watches.** The MCP server starts its watcher on the first screen tool call and keeps it until the
 client exits; `IGNITE_SCRIBE_WATCH=0` turns it off. It learns *where* the screen changed from Desktop
 Duplication's changed-rectangle list and from window events, without reading pixels, and it holds its change

@@ -159,6 +159,7 @@ class Server:
         from . import always_on as _always_on
         self.always_on_wanted = _always_on.enabled(self.policy)
         self.always = None                           # always_on.AlwaysOn, on the process holding its lock
+        self.beacon = self.tray = None               # tray.Beacon / tray.Tray, for a real stdio session
         self._always_lock = None
         self._always_error = None
         self.watcher = watcher
@@ -239,6 +240,9 @@ class Server:
         return h
 
     def close(self):
+        for part in (self.tray, self.beacon):
+            if part is not None:
+                part.stop()
         if self.always is not None:
             self.always.stop()
         if self.watcher is not None and hasattr(self.watcher, "stop"):
@@ -489,6 +493,15 @@ def main(server: Server | None = None, stdin=None, stdout=None) -> None:
     if h is not None and h.recorder:               # the recording process watches from its start
         server._watcher()
     server.start_always_on()
+    real_session = stdin is sys.stdin and stdout is sys.stdout
+    if real_session:
+        from . import tray
+        if tray.enabled():                         # the notification-area icon: when the screen is being read
+            try:
+                server.beacon = tray.Beacon(server).start()
+                server.tray = tray.Tray().start()
+            except Exception as e:  # noqa: BLE001 - the icon is a convenience; the server runs without it
+                print(f"tray unavailable: {e}", file=sys.stderr)
     try:
         for line in stdin:
             if not line.strip():
