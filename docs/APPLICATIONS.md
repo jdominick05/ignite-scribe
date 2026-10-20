@@ -60,7 +60,7 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 | Semantic history search | 0.0.8 | bge-small on the iGPU (DirectML); vectors encrypted like the text |
 | `wait_for`: wait for text, its absence, a change or quiet | 0.0.9 | 1 call against 6-12 polling turns |
 | Action checker | 0.0.9 | `wait_for(since=..., quiet_s=0.5)` after an action reports what it changed |
-| ScribeRec: a text recognizer trained for the NPU | 0.0.9 | 99.8% of characters right on synthetic UI text, 9.1 ms a line on the NPU |
+| ScribeRec: a text recognizer trained for the NPU | 0.0.9 | Release-03 (after 0.1.0): 0.22% character errors on a real terminal against PP-OCRv5's 0.48%; exact on the NPU |
 | Line cache for OCR | 0.0.9 | About 89% of lines reused on scrolling content |
 | Always-on OCR (opt-in, NPU only) | 0.0.9 | Yields to NPU measurements, battery and pause; 1.3% of a core in the server |
 | Prompt-injection flags, pattern tier | 0.1.0 | Hidden characters, overrides (EN/DE/FR/ES), role and address patterns; 0 false positives on UI lines and benign emails |
@@ -77,8 +77,9 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
     pre-registered targets, and short, direct attacks are the gap ([INJECTION.md](INJECTION.md)).
   - Scoring is incremental, at 75.6 ms per batch live.
   - Release-02 and a download for installed copies are next.
-- **ScribeRec release-02:** a fine-tune for real screens (terminal and editor fonts, dark themes). On a real
-  terminal, release-01 has 3-4.5x the errors of PP-OCRv5 ([OCR.md](OCR.md)).
+- **ScribeRec on busy terminal UIs:** release-03 beats PP-OCRv5 on a static terminal, but on a live TUI full of
+  box-drawing rules and spinner glyphs it still makes about 3x PP-OCRv5's errors ([OCR.md](OCR.md)). Next: rule
+  and box rows as neighbours in the generator.
 - **A model download for installed copies:** ScribeRec, the detector and secure mode's model live only in local
   folders today.
 

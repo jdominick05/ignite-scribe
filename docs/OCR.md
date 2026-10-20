@@ -382,3 +382,35 @@ contaminated (CER 0.67, with the line counts drifting) and is not counted.
   - crop geometry: more zero-padding crops, matching the detector's boxes;
   - space handling at monospace cell gaps.
 - `ScribeRec(charset=...)` exists for the mask, which is off by default.
+
+## ScribeRec release-03, installed (2026-10-20, Desktop 2)
+
+Release-02 and r02b failed on real terminals, worse than release-01 on the same crops. The cause was the crop,
+not the font (`tools/ocr_diag.py`, aggregates only):
+- terminal rows have no leading, and the detector's boxes are 1.0-1.3 rows tall, so the neighbouring rows' ink is
+  in most crops;
+- on a static terminal, 91% of release-01's wrong lines have ink in their top 3 px rows, against 70% of all
+  lines;
+- its top errors were marks that sit high on a line (a space read as ' or ¯): the descenders of the row above.
+
+Release-03 (Model Work, a fine-tune of release-01) trains on that geometry. It stacks three rows at the cell
+pitch with zero leading, crops 0.8-1.4 pitches around the target row, and adds prompt, cursor and box glyphs at
+the edges.
+
+**The gate** (`ocr_diag.py --static docs/DESIGN.md`): a new terminal window showing a tracked file, so its UI
+Automation truth cannot move. All recognizers read the same crops. Pass mark: at most 1.5x PP-OCRv5's CER.
+
+| recognizer | static terminal, CER (3 runs) | live terminal TUI, CER |
+|---|---:|---:|
+| PP-OCRv5 (CPU) | 0.0048-0.0054 | 0.0153 |
+| ScribeRec release-01 | 0.0140-0.0155 | 0.0829 |
+| ScribeRec r02b | 0.0198-0.0209 | 0.0439 (other run) |
+| **ScribeRec release-03** | **0.0022** | 0.0447 |
+
+- **On the NPU** (XDNA Worker, `tools/scriberec_parity.py --truth`): worst 0 steps against the XINT8 ONNX in all
+  buckets and splits, 12/12 lines the same, CER 0.00151 on both paths. Per line it costs 10.4-16.9 ms
+  (29.8 ms for a split line), against 18.5-50.0 ms for CPU int8.
+- **The live TUI is still the weak case:** a space is read as '-' next to box-drawing rules, and spinner and
+  check glyphs (◐ ✔ ◻) that aren't in the dictionary get inserted.
+- **Installed:** `models/scriberec` with `build/scriberec_<W>.ignite`. Release-01 is kept as
+  `models/scriberec_r01` and `build/scriberec_r01_<W>.ignite`.

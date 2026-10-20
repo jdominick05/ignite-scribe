@@ -186,9 +186,9 @@ setting and environment variable, and exactly what each feature reads and stores
 On a PC with an AMD Ryzen AI NPU (XDNA1: Phoenix, Hawk Point), ignite-scribe can also read pixels:
 - **UI elements** (icons, buttons) in windows UI Automation cannot describe, with a detector running entirely on
   the NPU;
-- **text**, with ScribeRec, a recognizer trained for this NPU: 99.8% of characters right on synthetic UI text, at
-  9.1 ms a line. On a real terminal it is still behind the CPU recognizer (97% against 99%), and a fine-tune is
-  planned ([OCR.md](docs/OCR.md));
+- **text**, with ScribeRec, a recognizer trained for this NPU (8-17 ms a line). On a real terminal showing fixed
+  text it gets 99.8% of characters right, ahead of the CPU recognizer PP-OCRv5 (99.5%). On busy terminal UIs full
+  of box and spinner glyphs it is still behind ([OCR.md](docs/OCR.md));
 - **always-on OCR**. With constantly changing text on screen, the worst case, it cost 1.3% of a core in the
   server and 1.6% of the machine in the NPU worker.
 
