@@ -55,6 +55,8 @@ it on request. The OS can describe most of a desktop exactly and for free; visio
   - `scribe_status` (with the watcher's state);
   - `get_screen_state`: served from the watcher's state; `refresh` walks afresh;
   - `screen_changes(since)`: events since a sequence number, with `next_since`;
+  - `wait_for`: blocks on the watcher's events until text appears or goes, or anything changes, then optionally until
+    the screen settles. With `since` it is the check after an action taken by the agent's own harness;
   - `search_screen_history` and `screen_at` (opt-in history);
   - `list_windows`: no content. Planned: `find_on_screen`.
 - **Hook** (planned): a short screen summary on each prompt. It is simpler, but it sends screen content with every

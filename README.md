@@ -5,19 +5,21 @@ click. It is served over MCP (and, later, a hook). The OS's own structure comes 
 Automation. NPU vision on XDNA1 (via [ignite-xdna](https://github.com/jdominick05/ignite-xdna)) handles only the pixels
 the OS cannot describe.
 
-**Status: 0.0.8.** Two sources: Win32 windows (no dependencies) and UI Automation (the `uia` extra: control
+**Status: 0.0.9.** Two sources: Win32 windows (no dependencies) and UI Automation (the `uia` extra: control
 names, values, and the on-screen text of terminals and documents), kept current by a change-driven watcher
 that re-reads only the windows that changed, with redaction and a stdio MCP server. For windows UI
 Automation cannot describe, `find_ui_elements` finds UI elements (boxes, no text) with an icon detector
-running on the XDNA1 NPU (see [docs/VISION.md](docs/VISION.md)), and `ocr_windows` reads their text with
-PP-OCRv5, on the CPU until an NPU-native recognizer is trained ([docs/OCR.md](docs/OCR.md)). An opt-in, encrypted
-screen history answers "what was on screen when". See [docs/DESIGN.md](docs/DESIGN.md) for the plan.
+running on the XDNA1 NPU (see [docs/VISION.md](docs/VISION.md)), and `ocr_windows` reads their text: PP-OCRv5's
+detector on the CPU, and ScribeRec, a recognizer trained to run exactly on the NPU (seed-100 CER 0.00181, 9.1 ms
+a line; [docs/OCR.md](docs/OCR.md)). `wait_for` lets an agent wait for the screen instead of polling it. An
+opt-in, encrypted screen history answers "what was on screen when", and opt-in always-on OCR feeds it. See
+[docs/DESIGN.md](docs/DESIGN.md) for the plan.
 
 ```powershell
 python -m ignite_scribe snapshot          # the redacted screen state once, as markdown (--json, --no-text)
 python -m ignite_scribe watch --seconds 30 # change events as JSON lines (Ctrl+C to stop)
 python -m ignite_scribe mcp               # MCP tools on stdio: scribe_status, get_screen_state,
-                                          #   screen_changes, find_ui_elements, ocr_windows,
+                                          #   screen_changes, wait_for, find_ui_elements, ocr_windows,
                                           #   search_screen_history, screen_at, list_windows
 python -m ignite_scribe history status    # the opt-in history: status, search QUERY --since 2h, purge
 ```
@@ -40,6 +42,25 @@ anything leaves the engine:
 - `IGNITE_SCRIBE_POLICY` names a JSON policy file that extends the defaults.
 
 Every result is also marked as untrusted, because text on screen can be written to instruct an agent.
+
+**Waiting instead of polling.** `wait_for` blocks until text appears (`text`), goes (`gone`), or anything
+changes, and with `quiet_s` until the screen settles. Text already on screen counts, and so does text that came and
+went after `since`, so nothing between two calls is missed. An agent that clicks or types with its own tools (a
+computer-use harness) can check the action: note `next_since`, act, then call `wait_for(since=..., quiet_s=0.5)`.
+The reply lists what the action changed, and `timeout` means it changed nothing.
+
+What noticing the end of a 20 s build costs (`tools/waitfor_bench.py`, Desktop 2, 3 runs; text tokens estimated as
+bytes/4; screenshot tokens as w*h/750 after scaling to at most 1568 px a side and 1.15 MP, a common vision-model
+rule):
+
+| | model turns | tokens to the model | noticed after |
+|---|---:|---:|---:|
+| `wait_for` | 1 | 112 | 56-247 ms |
+| text polling every 5 s (`get_screen_state`) | 6 | about 27,300 | 2.5 s on average |
+| screenshot polling every 5 s | 6 | about 9,200 | 2.5 s on average |
+| screenshot polling every 2 s | 12 | about 18,400 | 1 s on average |
+
+Each polling turn also re-reads the agent's context, which this table does not count.
 
 **While it watches.** The MCP server starts its watcher on the first screen tool call and keeps it until the
 client exits; `IGNITE_SCRIBE_WATCH=0` turns it off. It learns *where* the screen changed from Desktop

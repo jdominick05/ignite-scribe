@@ -71,6 +71,7 @@ class Watcher:
         self.stats = dict(refreshes=0, walks=0, refresh_ms_total=0.0, winevents=0, dirty_rects=0)
         self.dirty_source = "starting"
         self._lock = threading.Lock()
+        self._changed = threading.Condition(self._lock)   # notified when events are appended (wait_for)
         self._ready = threading.Event()
         self._stop = threading.Event()
         self._dirty: set[int] = set()
@@ -110,6 +111,21 @@ class Watcher:
         next_since = evs[-1]["seq"] if evs else max(since, seq)
         return dict(seq=seq, since=since, next_since=next_since, truncated=truncated, more=more,
                     events=compact(evs) if merge else evs)
+
+    def wait(self, since: int, timeout: float) -> int:
+        """Block until an event after ``since`` exists, or ``timeout`` seconds pass. -> the current seq."""
+        with self._changed:
+            self._changed.wait_for(lambda: self.seq > since, max(0.0, timeout))
+            return self.seq
+
+    def _append(self, new: list[dict], t: float):
+        """Number and store events, then wake waiters. The caller holds the lock."""
+        for e in new:
+            self.seq += 1
+            e["seq"], e["t"] = self.seq, t
+            self.events.append(e)
+        if new:
+            self._changed.notify_all()
 
     def take_pixel_dirty(self) -> dict[int, tuple]:
         """The changed rectangle per window since the last call (from Desktop Duplication; rectangles only)."""
@@ -224,10 +240,7 @@ class Watcher:
         red, counts = self.policy.apply(snap)
         with self._lock:
             new = diff(self.state, red)
-            for e in new:
-                self.seq += 1
-                e["seq"], e["t"] = self.seq, red.taken_at
-                self.events.append(e)
+            self._append(new, red.taken_at)
             self.state, self.counts, self.as_of = red, counts, red.taken_at
             self.stats["refreshes"] += 1
             self.stats["refresh_ms_total"] += (time.perf_counter() - t0) * 1000
