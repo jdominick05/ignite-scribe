@@ -145,6 +145,7 @@ Change your answers at any time with `ignite-scribe setup`.
 | `get_screen_state` | Open windows (focus, position, process) and the text inside them |
 | `screen_changes` | What changed since last time: windows opened, closed, moved, renamed, new lines of text |
 | `wait_for` | Blocks until text appears or goes, or the screen changes or settles; checks an action |
+| `get_selection` | The text you highlighted in the focused window, so "explain this" needs no copy-paste |
 | `find_element` | Where to click: a button, menu item, field or link by name, with a click point the OS confirmed reaches it, whether it is enabled, and its shortcut keys |
 | `list_windows` | Just the window list |
 | `search_screen_history` · `screen_at` | The opt-in history: search it, or see the screen as it was at a time |

@@ -47,6 +47,16 @@ went after `since`, so nothing between two calls is missed. An agent that clicks
 computer-use harness) can check the action: note `next_since`, act, then call `wait_for(since=..., quiet_s=0.5)`.
 The reply lists what the action changed, and `timeout` means it changed nothing.
 
+**What the user selected.** `get_selection()` returns the text highlighted in the focused window, the control
+it is in (role and name), the window, and one screen rectangle per selected line. It reads the focused element's
+UI Automation Text pattern, climbing at most 8 ancestors to the one that has it, and never leaving the app's
+process. Apps without a Text pattern (some canvases, games) report no selection, and a caret alone is reported
+as nothing selected.
+- The policy comes first: when it excludes the focused window, UI Automation is never asked.
+- A focused password field, or one above the focus, is never read.
+- The text is scrubbed and flagged like any screen text. A flagged selection is still returned, because the user
+  chose it, but it stays data.
+
 **Where to click.** `find_element(name, role, match)` walks the matched windows fresh (the policy first, so an
 excluded window is never read) and returns controls ranked by name: exact, prefix, a word's prefix, substring,
 then AutomationId and value. The focused window comes first on ties. Each hit has:

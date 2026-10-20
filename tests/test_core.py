@@ -76,7 +76,7 @@ def test_mcp_protocol_over_stdio_framing():
     assert {t["name"] for t in replies[1]["result"]["tools"]} == {"scribe_status", "get_screen_state",
                                                                  "screen_changes", "find_ui_elements", "ocr_windows",
                                                                  "search_screen_history", "screen_at", "list_windows",
-                                                                 "wait_for", "find_element"}
+                                                                 "wait_for", "find_element", "get_selection"}
     state = json.loads(replies[2]["result"]["content"][0]["text"])
     assert state["note"] == UNTRUSTED and state["redaction"]["windows_withheld"] == 2
     listed = json.loads(replies[3]["result"]["content"][0]["text"])["windows"]

@@ -67,6 +67,7 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 | Tray icon: shows when the screen is being read | 0.1.0 | Watching, reading pixels, paused or idle; pause from the menu |
 | Tray polish and live settings | after 0.1.0 | Icons with shapes (no colour key needed), every setting in the menu, applied live; the background service owns the icon |
 | One-line installer, `ignite-scribe setup`, background service | 0.1.0 | No admin rights, no Git; a per-user logon entry |
+| `get_selection`: the text the user highlighted (idea 2) | after 0.1.0 | Text pattern of the focused control; policy first, password fields never read, scrubbed and flagged |
 | `find_element`: the element map for clicking (idea 1) | after 0.1.0 | Name, role and window search; a click point the OS confirms reaches the control's window (menus and the taskbar included); enabled, accelerator and access keys, AutomationId, actions |
 
 ## 🔨 In progress
@@ -100,7 +101,7 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 | # | Idea | What it gives |
 |---|---|---|
 | 1 | ✅ **Element map for clicking**: `find_element("Save button in Notepad")` -> rectangle, centre, enabled, shortcut | Shipped as `find_element(name, role, match)`, see above. A click tool (e.g. Hermes's) hits exact coordinates instead of guessing from screenshots; `wait_for` then confirms. |
-| 2 | **`get_selection`**: the text the user highlighted (UI Automation Text pattern) | "Explain this" or "fix this" without copy-paste |
+| 2 | ✅ **`get_selection`**: the text the user highlighted (UI Automation Text pattern) | Shipped, see above. "Explain this" or "fix this" without copy-paste |
 | 3 | **Tables**: data grids as rows and columns (Excel, file lists, admin consoles, web tables) | Spreadsheets and dashboards become queryable |
 | 4 | **App adapters**: terminal (folder, last command, exit status), IDE (file, line, Problems panel), browser (URL, tabs), mail and chat (sender, subject, messages) | Fields instead of raw text |
 | 5 | **`expect` assertions**: `expect(window, text, within)` -> pass or fail | A test oracle for agents and UI scripts, built on `wait_for` |

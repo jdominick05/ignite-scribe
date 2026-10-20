@@ -218,6 +218,107 @@ def walk(hwnd: int, node_cap: int = 600, seconds: float = 1.0,
     return (blocks if detail else _dedupe(blocks)), notes
 
 
+PROCESS_ID, NATIVE_HWND = 30002, 30020
+CLIMB = 8                 # ancestors searched for a Text pattern above the focused element
+EM_GETSEL, ES_PASSWORD, GWL_STYLE, SMTO_ABORTIFHUNG = 0xB0, 0x20, -16, 0x2
+
+
+def selection(pid: int) -> dict:
+    """The text selected in the focused element, which must belong to process ``pid`` (the focused window's: the
+    caller checked the policy for that window first). -> dict with ``text`` (may be empty: a caret only), ``role``,
+    ``name``, ``rects`` (screen pixels, one per selected line); or ``password`` / ``none`` / ``error``. A password
+    element, or an ancestor that is one, is never read. Never raises for app errors.
+
+    The focused element's Text pattern is used, else that of the nearest ancestor that has one. A classic Win32
+    Edit or RichEdit has none: its selection offsets come from ``EM_GETSEL`` (with a timeout) and its text from the
+    UIA Value, which is read for any non-password element anyway; such a selection has no line rectangles."""
+    try:
+        auto, _ = _init()
+        if getattr(_tls, "sel", None) is None:
+            c = auto.CreateCacheRequest()
+            for p in (NAME, CONTROL_TYPE, IS_PASSWORD, IS_TEXT_AVAILABLE, IS_VALUE_AVAILABLE, PROCESS_ID,
+                      NATIVE_HWND):
+                c.AddProperty(p)
+            _tls.sel = c
+        cache = _tls.sel
+        el = auto.GetFocusedElementBuildCache(cache)
+        if el.GetCachedPropertyValue(PROCESS_ID) != pid:
+            return dict(error="the keyboard focus is not in the focused window's process")
+        walker = auto.ControlViewWalker
+        for _ in range(CLIMB + 1):
+            if el is None:
+                break
+            if el.CachedIsPassword:
+                return dict(password=True)
+            if el.GetCachedPropertyValue(IS_TEXT_AVAILABLE):
+                break
+            if _classic_edit(el):
+                return _edit_selected(el)
+            el = walker.GetParentElementBuildCache(el, cache)
+            if el is not None and el.GetCachedPropertyValue(PROCESS_ID) != pid:   # climbed out of the app
+                el = None
+        else:
+            el = None
+        if el is None or not el.GetCachedPropertyValue(IS_TEXT_AVAILABLE):
+            return dict(none="the focused control exposes no text selection")
+        return _selected(el)
+    except Exception as e:  # noqa: BLE001 - provider refused, timed out or vanished
+        return dict(error=f"UI Automation: {type(e).__name__}")
+
+
+def _classic_edit(el) -> int | None:
+    """The window handle of a classic Win32 Edit / RichEdit element (not a password one), else None."""
+    import ctypes
+    h = el.GetCachedPropertyValue(NATIVE_HWND)
+    if not h:
+        return None
+    buf = ctypes.create_unicode_buffer(64)
+    ctypes.windll.user32.GetClassNameW(ctypes.c_void_p(h), buf, 64)
+    cls = buf.value.lower()
+    if cls != "edit" and not cls.startswith("richedit"):
+        return None
+    if ctypes.windll.user32.GetWindowLongW(ctypes.c_void_p(h), GWL_STYLE) & ES_PASSWORD:
+        return None                          # IsPassword already said no; the style is checked as well
+    return h
+
+
+def _edit_selected(el) -> dict:
+    """A classic Edit's selection: offsets from EM_GETSEL, text from its UIA Value (UTF-16 offsets)."""
+    import ctypes
+    from ctypes import wintypes
+    h = _classic_edit(el)
+    if h is None or el.CachedIsPassword or not el.GetCachedPropertyValue(IS_VALUE_AVAILABLE):
+        return dict(none="the focused control exposes no text selection")
+    start, end, res = wintypes.DWORD(), wintypes.DWORD(), ctypes.c_size_t()
+    ok = ctypes.windll.user32.SendMessageTimeoutW(ctypes.c_void_p(h), EM_GETSEL, ctypes.byref(start),
+                                                  ctypes.byref(end), SMTO_ABORTIFHUNG, 500, ctypes.byref(res))
+    if not ok:
+        return dict(error="the edit control did not answer")
+    v = el.GetCurrentPropertyValue(VALUE)
+    v = v if isinstance(v, str) else ""
+    u = v.encode("utf-16-le")
+    a, b = sorted((start.value, end.value))
+    text = u[2 * a:2 * b].decode("utf-16-le", "replace").replace("\r\n", "\n").replace("\r", "\n")
+    return dict(text=text[:MAX_TEXT], truncated=len(text) > MAX_TEXT, rects=[],
+                role=CONTROL_TYPES.get(el.CachedControlType, "Unknown"), name=(el.CachedName or "").strip())
+
+
+def _selected(el) -> dict:
+    """The Text-pattern selection of a non-password element (the caller checked)."""
+    tp = el.GetCurrentPattern(TEXT_PATTERN).QueryInterface(_UIA.IUIAutomationTextPattern)
+    ranges = tp.GetSelection()
+    texts, rects = [], []
+    for i in range(ranges.Length if ranges else 0):
+        r = ranges.GetElement(i)
+        texts.append(r.GetText(MAX_TEXT + 1))
+        b = list(r.GetBoundingRectangles() or [])
+        rects += [[int(b[k]), int(b[k + 1]), int(b[k] + b[k + 2]), int(b[k + 1] + b[k + 3])]
+                  for k in range(0, len(b) - 3, 4)]
+    text = "\n".join(texts).replace("\r\n", "\n").replace("\r", "\n")
+    return dict(text=text[:MAX_TEXT], truncated=len(text) > MAX_TEXT, rects=rects[:200],
+                role=CONTROL_TYPES.get(el.CachedControlType, "Unknown"), name=(el.CachedName or "").strip())
+
+
 def _dedupe(blocks: list[TextBlock]) -> list[TextBlock]:
     """Drop exact repeats of (text, role): lists and toolbars often echo the same label several times."""
     out, seen = [], set()
