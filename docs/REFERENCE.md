@@ -52,10 +52,14 @@ excluded window is never read) and returns controls ranked by name: exact, prefi
 then AutomationId and value. The focused window comes first on ties. Each hit has:
 - `rect` and `click`, in physical screen pixels (per-monitor DPI aware). A click tool that is not DPI aware must
   divide by the display scale;
-- `occluded`, the share of the control that windows above it cover. `click` is a visible point: the centre when
-  that is visible, else the centre of the largest visible piece, else null;
-- `enabled`, `keys` (accelerator or access key, e.g. `Alt+s` from a `&Save` label), `automation_id`, `focused`
-  and `actions` (invoke, toggle, select, expand);
+- `click` is a point the OS confirmed (`click_checked`): `WindowFromPoint` there, then its root, is the hit's
+  window. So menus, tooltips, the taskbar and topmost tool windows, which the window list leaves out, are
+  accounted for. The centre is tried first, then the visible pieces' centres; null means nothing reaches it;
+- `visible_share`, an estimate from rectangles only: the control clipped to its window and the monitors, minus
+  the listed windows above it (off-screen parts count as not visible);
+- `enabled`, `accelerator` (e.g. Ctrl+S, while the app has focus), `access_key` (e.g. `Alt+s` from a `&Save`
+  label, only while that dialog or menu is active), `automation_id`, `focused` and `actions` (invoke, toggle,
+  select, expand);
 - its window (hwnd, title, process, z) and whether that window's text is flagged.
 
 A password field is found with its rectangle and role only. Names are screen text, so a page can label anything

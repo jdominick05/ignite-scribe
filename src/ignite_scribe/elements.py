@@ -5,10 +5,16 @@
 
 - **Coordinates** are physical screen pixels: this process is per-monitor DPI aware (``windows``). A click tool
   that is not DPI aware sees logical pixels and misses by the display scale (125% here), so the result says so.
-- **The click point is a visible one.** The control's rectangle is clipped to its window and the monitors, then
-  every window above its own (lower z) is subtracted. ``occluded`` is the covered share; ``click`` is the centre
-  when that is visible, else the centre of the largest visible piece, else None (clicking would hit another
-  window).
+- **The click point reaches the control's window.** The snapshot lists only taskbar windows, so menus, tooltips,
+  the taskbar and topmost tool windows are not in it. The OS decides instead (``owner_at``, by default
+  ``windows.root_at``: ``WindowFromPoint``, then its root): the centre is tried first, then the centre of each
+  visible piece, largest first, and the first point whose root is the hit's window is ``click``; None when no
+  point reaches it. ``click_checked`` says the OS confirmed it. Without ``owner_at`` (offline), the centre or the
+  largest visible piece is used unchecked.
+- ``visible_share`` is the rectangle arithmetic only, an estimate: the control clipped to its window and the
+  monitors, minus every listed window above its own. Off-screen parts count as not visible.
+- **Keys:** ``accelerator`` (e.g. Ctrl+S) works while the app has focus; ``access_key`` (Alt+s from a ``&Save``
+  label) only while that dialog or menu is active.
 - **Ranking:** an exact name first, then a name starting with the query, then a word of the name starting with
   it, then a substring of the name, then of its AutomationId, then of its value. Ties go to the focused window,
   then by z, then top to bottom.
@@ -20,6 +26,8 @@ Nothing is read here: the walk (and the policy before it, so an excluded window 
 (an agent may need to click into one) with its rectangle and role only.
 """
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from .rects import clip, free_rects
 from .snapshot import Rect, Snapshot, Window
@@ -38,27 +46,32 @@ def _inside(x: int, y: int, r: Rect) -> bool:
 
 
 def visible(snap: Snapshot, w: Window, r: Rect) -> tuple[list[Rect], float]:
-    """-> (the visible pieces of ``r``, the covered share of it). ``r`` is first clipped to its window and the
-    monitors; windows above ``w`` cover it."""
+    """-> (the visible pieces of ``r``, the visible share of it). ``r`` is first clipped to its window and the
+    monitors; listed windows above ``w`` cover it."""
     full = _area(r)
     c = Rect(max(r.left, w.rect.left), max(r.top, w.rect.top), min(r.right, w.rect.right),
              min(r.bottom, w.rect.bottom))
     c = clip(c, snap.monitors) if c.width > 0 and c.height > 0 else None
     if c is None or not full:
-        return [], 1.0
+        return [], 0.0
     above = [o.rect for o in snap.windows if o.z < w.z and not o.minimized and o.hwnd != w.hwnd]
     pieces = free_rects(c, above)
-    return pieces, round(1 - sum(_area(p) for p in pieces) / full, 3)
+    return pieces, round(sum(_area(p) for p in pieces) / full, 3)
 
 
-def click_point(r: Rect, pieces: list[Rect]) -> tuple[int, int] | None:
-    x, y = (r.left + r.right) // 2, (r.top + r.bottom) // 2
-    if any(_inside(x, y, p) for p in pieces):
-        return x, y
-    if not pieces:
-        return None
-    p = max(pieces, key=_area)
-    return (p.left + p.right) // 2, (p.top + p.bottom) // 2
+def click_point(r: Rect, pieces: list[Rect], hwnd: int,
+                owner_at: Callable[[int, int], int | None] | None = None) -> tuple[tuple[int, int] | None, bool]:
+    """-> (a point that clicks the control, whether the OS confirmed it reaches ``hwnd``)."""
+    centre = ((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+    pts = [((p.left + p.right) // 2, (p.top + p.bottom) // 2) for p in sorted(pieces, key=_area, reverse=True)]
+    if owner_at is None:
+        if any(_inside(*centre, p) for p in pieces):
+            return centre, False
+        return (pts[0] if pts else None), False
+    for pt in [centre] + [p for p in pts if p != centre]:
+        if owner_at(*pt) == hwnd:
+            return pt, True
+    return None, True
 
 
 def _score(q: str, name: str, aid: str, text: str) -> float:
@@ -81,9 +94,10 @@ def _score(q: str, name: str, aid: str, text: str) -> float:
 
 
 def find(snap: Snapshot, name: str | None = None, role: str | None = None, match: str | None = None,
-         enabled_only: bool = False, clickable: bool = True, limit: int = 10) -> list[dict]:
+         enabled_only: bool = False, clickable: bool = True, limit: int = 10,
+         owner_at: Callable[[int, int], int | None] | None = None) -> list[dict]:
     """Hits, best first (see the module docstring). ``role``: a UIA control type (case-insensitive); without it,
-    only clickable roles count unless ``clickable`` is False."""
+    only clickable roles count unless ``clickable`` is False. The OS check runs only for the hits returned."""
     q = (name or "").strip().lower()
     want = (role or "").strip().lower()
     m = (match or "").lower()
@@ -106,15 +120,15 @@ def find(snap: Snapshot, name: str | None = None, role: str | None = None, match
             score = _score(q, label, d.get("automation_id") or "", "" if password else b.text)
             if not score or (enabled_only and d.get("enabled") is False):
                 continue
-            pieces, occluded = visible(snap, w, b.rect)
+            pieces, share = visible(snap, w, b.rect)
             hit = dict(name=label or None, role=b.role, rect=[b.rect.left, b.rect.top, b.rect.right, b.rect.bottom],
-                       click=click_point(b.rect, pieces), occluded=occluded,
+                       visible_share=share, _pieces=pieces,
                        window=dict(hwnd=w.hwnd, title=w.title, process=w.process, z=w.z, focused=w.focused,
                                    flagged=bool(w.flags)))
             if password:
                 hit["password_field"] = True
             else:
-                for k in ("enabled", "keys", "automation_id", "focused", "actions"):
+                for k in ("enabled", "accelerator", "access_key", "automation_id", "focused", "actions"):
                     if d.get(k) not in (None, [], ""):
                         hit[k] = d[k]
                 value = b.text if label and b.text.startswith(label + ": ") else None
@@ -122,4 +136,10 @@ def find(snap: Snapshot, name: str | None = None, role: str | None = None, match
                     hit["value"] = value[len(label) + 2:][:200]
             hits.append((-score, not w.focused, w.z, b.rect.top, b.rect.left, hit))
     hits.sort(key=lambda h: h[:5])
-    return [h[5] for h in hits[:max(1, limit)]]
+    out = [h[5] for h in hits[:max(1, limit)]]
+    for h in out:
+        r = Rect(*h["rect"])
+        h["click"], checked = click_point(r, h.pop("_pieces"), h["window"]["hwnd"], owner_at)
+        if checked:
+            h["click_checked"] = True
+    return out

@@ -67,7 +67,7 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 | Tray icon: shows when the screen is being read | 0.1.0 | Watching, reading pixels, paused or idle; pause from the menu |
 | Tray polish and live settings | after 0.1.0 | Icons with shapes (no colour key needed), every setting in the menu, applied live; the background service owns the icon |
 | One-line installer, `ignite-scribe setup`, background service | 0.1.0 | No admin rights, no Git; a per-user logon entry |
-| `find_element`: the element map for clicking (idea 1) | after 0.1.0 | Name, role and window search; a click point no other window covers; enabled, shortcut keys, AutomationId, actions; checked end to end with `WindowFromPoint` |
+| `find_element`: the element map for clicking (idea 1) | after 0.1.0 | Name, role and window search; a click point the OS confirms reaches the control's window (menus and the taskbar included); enabled, accelerator and access keys, AutomationId, actions |
 
 ## 🔨 In progress
 

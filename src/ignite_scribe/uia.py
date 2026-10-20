@@ -21,7 +21,7 @@ element's name or value is dropped. An element whose Text pattern gave multi-lin
 its children (a document's links, a terminal's parts) would repeat that text.
 
 **Detail** (``walk(detail=True)``, for ``find_element`` only): a second cache request adds whether each element is
-enabled, its shortcut keys, AutomationId, keyboard focus and which actions it supports (invoke, toggle, select,
+enabled, its accelerator and access keys, AutomationId, keyboard focus and which actions it supports (invoke, toggle, select,
 expand), all in the same cached call; a clickable control with no name is kept too. A password element gets none
 of it: its early return comes first. The watcher and snapshots never ask for detail, so their content and events
 are unchanged.
@@ -139,7 +139,7 @@ def _detail(el, name: str) -> dict:
         v = el.GetCachedPropertyValue(pid)
         return v.strip() if isinstance(v, str) and v.strip() else None
     return dict(name=name or None, enabled=bool(el.GetCachedPropertyValue(IS_ENABLED)),
-                keys=s(ACCELERATOR_KEY) or s(ACCESS_KEY), automation_id=s(AUTOMATION_ID),
+                accelerator=s(ACCELERATOR_KEY), access_key=s(ACCESS_KEY), automation_id=s(AUTOMATION_ID),
                 focused=bool(el.GetCachedPropertyValue(HAS_FOCUS)),
                 actions=[a for a, pid in ACTIONS.items() if el.GetCachedPropertyValue(pid)])
 

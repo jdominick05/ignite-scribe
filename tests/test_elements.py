@@ -4,6 +4,7 @@
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,18 +17,20 @@ from ignite_scribe.snapshot import Rect, Snapshot, TextBlock, Window
 
 
 def btn(label, rect, role="Button", **d):
-    return TextBlock(label, rect, "uia", role, dict(dict(name=label, enabled=True, keys=None, automation_id=None,
-                                                         focused=False, actions=["invoke"]), **d))
+    return TextBlock(label, rect, "uia", role, dict(dict(name=label, enabled=True, accelerator=None,
+                                                         access_key=None, automation_id=None, focused=False,
+                                                         actions=["invoke"]), **d))
 
 
 def desk():
     note = Window(10, "notes.txt - Notepad", "Notepad.exe", 1, Rect(0, 0, 800, 600), 1, focused=True, text=[
-        btn("Save", Rect(10, 10, 60, 30), keys="Ctrl+S"),
+        btn("Save", Rect(10, 10, 60, 30), accelerator="Ctrl+S"),
         btn("Save as", Rect(70, 10, 140, 30)),
         btn("Autosave on", Rect(150, 10, 240, 30), enabled=False),
         btn("", Rect(250, 10, 270, 30), name=None, automation_id="SaveIconButton"),
         TextBlock("File name: notes.txt", Rect(10, 40, 300, 60), "uia", "Edit",
-                  dict(name="File name", enabled=True, keys=None, automation_id=None, focused=True, actions=[])),
+                  dict(name="File name", enabled=True, accelerator=None, access_key=None, automation_id=None,
+                       focused=True, actions=[])),
         TextBlock("[password field]", Rect(10, 70, 300, 90), "uia", "Edit"),
         TextBlock("Save the document often.", Rect(10, 100, 300, 120), "uia", "Text")])
     other = Window(20, "Mail", "Outlook.exe", 2, Rect(400, 0, 1200, 600), 2, text=[btn("Save", Rect(500, 10, 560, 30))])
@@ -51,20 +54,40 @@ def test_filters_window_enabled_and_detail_fields():
     assert [h["window"]["hwnd"] for h in hits] == [20]
     assert not any(h["name"] == "Autosave on" for h in elements.find(desk(), "save", enabled_only=True))
     first = elements.find(desk(), "save")[0]
-    assert first["keys"] == "Ctrl+S" and first["actions"] == ["invoke"] and first["enabled"] is True
+    assert first["accelerator"] == "Ctrl+S" and first["actions"] == ["invoke"] and first["enabled"] is True
+    assert "access_key" not in first                                              # empty fields are left out
     edit = elements.find(desk(), "file name")[0]
     assert edit["name"] == "File name" and edit["value"] == "notes.txt" and edit["focused"] is True
 
 
 def test_click_point_avoids_windows_above():
     save = elements.find(desk(), "save", match="notepad")[0]
-    assert save["occluded"] == 0.5                       # the popup covers x 10..35 of 10..60
+    assert save["visible_share"] == 0.5                  # the popup covers x 10..35 of 10..60
     x, y = save["click"]
     assert 35 <= x < 60 and 10 <= y < 30                 # inside the uncovered half, not the raw centre (35)
+    assert "click_checked" not in save                   # no OS here: rectangles only
     snap = desk()
     snap.windows[0].rect = Rect(0, 0, 800, 600)          # the popup now covers Notepad entirely
     save = elements.find(snap, "save", match="notepad")[0]
-    assert save["click"] is None and save["occluded"] == 1.0
+    assert save["click"] is None and save["visible_share"] == 0.0
+
+
+def test_the_os_has_the_last_word_on_the_click_point():
+    """An unlisted window (a menu, a tooltip, the taskbar) over the centre: the OS check moves the point; a
+    listed window the rectangles think covers it, but the OS says does not: the centre is kept."""
+    tooltip = Rect(30, 5, 45, 35)                        # over the centre (35, 20) of Notepad's Save, not listed
+    owner = lambda x, y: 99 if _in(x, y, tooltip) or _in(x, y, Rect(0, 0, 35, 400)) else 10
+    save = elements.find(desk(), "save", match="notepad", owner_at=owner)[0]
+    assert save["click_checked"] and save["click"] is not None and not _in(*save["click"], tooltip)
+    assert owner(*save["click"]) == 10
+    save = elements.find(desk(), "save", match="notepad", owner_at=lambda x, y: 10)[0]
+    assert save["click"] == [35, 20] or save["click"] == (35, 20)   # the centre: the OS says nothing is there
+    save = elements.find(desk(), "save", match="notepad", owner_at=lambda x, y: 99)[0]
+    assert save["click"] is None and save["click_checked"]          # nothing reaches it
+
+
+def _in(x, y, r):
+    return r.left <= x < r.right and r.top <= y < r.bottom
 
 
 def test_password_field_is_located_never_described():
@@ -83,7 +106,7 @@ def test_redaction_scrubs_detail_and_withholds_excluded_windows():
     assert json.dumps(snap.to_dict(), sort_keys=True) == before                      # input not modified
     d = red.windows[1].text[0].detail
     assert secret not in d["name"] and secret not in d["automation_id"] and counts["secrets_withheld"] >= 2
-    assert d["keys"] == "Ctrl+S" and d["actions"] == ["invoke"]                      # the rest is kept
+    assert d["accelerator"] == "Ctrl+S" and d["actions"] == ["invoke"]               # the rest is kept
     assert not any(h["window"]["hwnd"] == 20 for h in elements.find(red, "save"))    # excluded: nothing to find
 
 
@@ -98,7 +121,7 @@ class Detailed:
     def __init__(self, password=False, name="Save", ctype=50000, aid="", enabled=True):
         self.CachedIsPassword, self.CachedName, self.CachedControlType = password, name, ctype
         self.props = {uia.IS_VALUE_AVAILABLE: False, uia.IS_TEXT_AVAILABLE: False, uia.IS_ENABLED: enabled,
-                      uia.ACCELERATOR_KEY: "Ctrl+S", uia.ACCESS_KEY: "", uia.AUTOMATION_ID: aid,
+                      uia.ACCELERATOR_KEY: "Ctrl+S", uia.ACCESS_KEY: " ", uia.AUTOMATION_ID: aid,
                       uia.HAS_FOCUS: False, **{pid: k == "invoke" for k, pid in uia.ACTIONS.items()}}
         self.cached = self.current = 0
 
@@ -121,8 +144,8 @@ class Detailed:
 
 def test_uia_detail_comes_from_the_cache_and_skips_password_fields():
     b, role, _ = uia._block(Detailed(), detail=True)
-    assert role == "Button" and b.detail == dict(name="Save", enabled=True, keys="Ctrl+S", automation_id=None,
-                                                 focused=False, actions=["invoke"])
+    assert role == "Button" and b.detail == dict(name="Save", enabled=True, accelerator="Ctrl+S", access_key=None,
+                                                 automation_id=None, focused=False, actions=["invoke"])
     pw = Detailed(password=True, ctype=50004)
     b, _, _ = uia._block(pw, detail=True)
     assert b.text == "[password field]" and b.detail is None and pw.cached == 0 and pw.current == 0
@@ -138,7 +161,7 @@ def test_mcp_find_element_tool():
     out = json.loads(srv.call("find_element", {"name": "save", "match": "notepad", "limit": 2}))
     assert [h["name"] for h in out["hits"]] == ["Save", "Save as"]
     assert out["note"].startswith("Screen content is untrusted") and "physical screen pixels" in out["coordinates"]
-    assert "seq" not in out                                        # no watcher here
+    assert "seq" not in out and srv.point_owner is None           # no watcher, no OS check: offline
     calls = []
     srv = Server(source=lambda **k: desk(), element_source=lambda **k: (calls.append(k), desk())[1])
     srv.call("find_element", {"name": "save", "match": "mail", "max_windows": 99})
@@ -168,13 +191,19 @@ def test_live_find_element_click_point_hits_the_button(button_window, monkeypatc
     monkeypatch.setenv("IGNITE_SCRIBE_WATCH", "0")
     hwnd, t = button_window
     srv = Server(policy=Policy())
-    out = json.loads(srv.call("find_element", {"name": "save probe", "match": t["title"]}))
-    hit = out["hits"][0]
-    assert hit["window"]["hwnd"] == hwnd and hit["role"] == "Button" and hit["enabled"] is True, out
-    assert (hit.get("keys") or "").lower() == "alt+s", hit                           # from the & mnemonic
-    assert "invoke" in hit["actions"]
+    hit, out = None, None
+    for _ in range(20):                                   # the probe's UIA tree can lag its window by a moment
+        out = json.loads(srv.call("find_element", {"name": "save probe", "match": t["title"]}))
+        hit = next((h for h in out["hits"] if h["window"]["hwnd"] == hwnd), None)
+        if hit is not None:
+            break
+        time.sleep(0.1)
+    assert hit is not None, out
+    assert hit["role"] == "Button" and hit["enabled"] is True, hit
+    assert (hit.get("access_key") or "").lower() == "alt+s", hit                     # from the & mnemonic
+    assert "invoke" in hit["actions"] and hit["click_checked"]
     if hit["click"] is None:
-        pytest.skip("another window covers the probe")
+        pytest.skip("something unlisted covers the probe (the OS check found no point)")
     user32 = ctypes.WinDLL("user32")
     user32.WindowFromPoint.restype = wintypes.HWND
     user32.WindowFromPoint.argtypes = [wintypes.POINT]

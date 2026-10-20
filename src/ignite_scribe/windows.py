@@ -35,6 +35,11 @@ user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetWindow.restype = wintypes.HWND
 user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
 user32.GetForegroundWindow.restype = wintypes.HWND
+user32.WindowFromPoint.restype = wintypes.HWND
+user32.WindowFromPoint.argtypes = [wintypes.POINT]
+user32.GetAncestor.restype = wintypes.HWND
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+GA_ROOT = 2
 
 
 
@@ -134,6 +139,15 @@ def windows() -> list[Window]:
                           rect=Rect(r.left, r.top, r.right, r.bottom), z=z, focused=hwnd == fg,
                           minimized=bool(user32.IsIconic(hwnd))))
     return out
+
+
+def root_at(x: int, y: int) -> int | None:
+    """The top-level window a click at screen pixel (x, y) would reach: whatever is really on top there, menus,
+    tooltips, the taskbar and unlisted tool windows included."""
+    dpi_aware()
+    h = user32.WindowFromPoint(wintypes.POINT(x, y))
+    root = user32.GetAncestor(h, GA_ROOT) if h else None
+    return int(root) if root else None
 
 
 def snapshot() -> Snapshot:
