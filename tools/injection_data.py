@@ -61,6 +61,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from ignite_scribe.injection import normalize  # noqa: E402
 from injection_eval import BIPIA, fetch, hf_rows  # noqa: E402
 import injection_templates as _v5  # noqa: E402
+import injection_templates_v6 as _v6  # noqa: E402
 
 GERMAN = re.compile(r"\b(und|der|die|das|ist|nicht|ich|du|sie|mit|für|auf|vergiss|ignoriere|bitte|eine?n?)\b", re.I)
 
@@ -507,6 +508,38 @@ HUMAN = [  # instructions to people, and ordinary system wording: benign by the 
 ]
 ARTICLE, HUMAN = _more(ARTICLE, _v5.ARTICLE), _more(HUMAN, _v5.HUMAN)
 ARTICLE_S, HUMAN_S = Templates("ARTICLE", ARTICLE), Templates("HUMAN", HUMAN)
+_taken = set(ARTICLE) | set(HUMAN) | set(REQUEST) | set(TERM)
+CODE_NOTE_S, TERM_NOTE_S, WEB_NOTE_S, PERSONA_S = (
+    Templates(n, [x for x in getattr(_v6, n) if x not in _taken]) for n in ("CODE_NOTE", "TERM_NOTE", "WEB_NOTE",
+                                                                           "PERSONA"))
+BOX = "\u2500"
+
+
+def note_terminal(rng: random.Random, split: str) -> str:
+    """v6: a terminal session with CLI hints and agent-TUI lines, sometimes inside box or rule rows."""
+    lines = gen_terminal(rng, split).split("\n")
+    for _ in range(rng.randint(1, 3)):
+        lines.insert(rng.randrange(len(lines) + 1), pick(rng, TERM_NOTE_S, split))
+    v = rng.random()
+    w = rng.randint(40, 90)
+    if v < 0.3:                                                   # an agent TUI's box
+        body = [f"\u2502 {ln[:w - 4]:<{w - 4}} \u2502" for ln in lines]
+        return "\n".join([f"\u256d{BOX * (w - 2)}\u256e", *body, f"\u2570{BOX * (w - 2)}\u256f"])
+    if v < 0.55:                                                  # rule rows between parts
+        i = rng.randrange(1, len(lines) + 1)
+        return "\n".join(lines[:i] + [BOX * w] + lines[i:] + [BOX * w])
+    return "\n".join(lines)
+
+
+def note_web(rng: random.Random, split: str) -> str:
+    """v6: a web page: navigation, a heading, a few sentences, banners and instructions to the reader."""
+    parts = [pick(rng, WEB_NOTE_S, split), unique(rng, sentence, split).rstrip(".")]
+    for _ in range(rng.randint(2, 5)):
+        parts.append(unique(rng, sentence, split))
+        if rng.random() < 0.35:
+            parts.append(pick(rng, WEB_NOTE_S, split))
+    parts.append(pick(rng, WEB_NOTE_S, split))
+    return "\n".join(parts)
 
 
 def local_chunks(files, rng, lo=200, hi=1800):
@@ -635,6 +668,33 @@ def main():
             return local_chunks(docs[split], r), dom
         return r.choice(prompts[split]), dom
 
+    def note_code(r, split):
+        """v6: source with comments, docstrings or review notes that give orders to the programmer."""
+        lines = local_chunks(code[split], r).split("\n")
+        for _ in range(r.randint(1, 3)):
+            note = pick(r, CODE_NOTE_S, split)
+            form = r.choice(["# {}", "// {}", '"""{}"""', "    # {}", "/* {} */", "> {}"])
+            lines.insert(r.randrange(len(lines) + 1), form.format(note))
+        return "\n".join(lines)
+
+    def note_persona(r, split):
+        ctx, dom = r.choice([lambda: (gen_email(r, split), "email"), lambda: (gen_chat(r, split), "chat"),
+                             lambda: (local_chunks(docs[split], r), "docs")])()
+        text, _ = plant(ctx, pick(r, PERSONA_S, split), dom, r)
+        return text, dom
+
+    def v6_carrier(r, split):
+        """-> (text, domain, plant) of one of the v6 kinds (benign as built)."""
+        k = r.randrange(4)
+        if k == 0:
+            return note_code(r, split), "code", "code_note"
+        if k == 1:
+            return note_terminal(r, split), "terminal", "term_note"
+        if k == 2:
+            return note_web(r, split), "web", "web_note"
+        t, dom = note_persona(r, split)
+        return t, dom, "persona"
+
     def attack(r, split):
         v = r.random()
         if v < 0.35:
@@ -654,7 +714,10 @@ def main():
                 q = pick(r, ARTICLE_S, split).format(atk=attack(r, split)[0])
                 text, style = plant(q + "\n\n" + context(r, split, False)[0], atk, "about_injection", r)
                 return dict(text=text, label=1, domain="about_injection", plant=style, source=src)
-            ctx, dom = context(r, split, prompt_ok=False)
+            if r.random() < 0.2:                                   # v6: the label is the attack, not the carrier
+                ctx, dom, _ = v6_carrier(r, split)
+            else:
+                ctx, dom = context(r, split, prompt_ok=False)
             text, style = plant(ctx, atk, dom, r)
             return dict(text=text, label=1, domain=dom, plant=style, source=src)
         if u < 0.65:                                              # hard negative: about injection, quoting one
@@ -679,6 +742,9 @@ def main():
             else:
                 t = pick(r, HUMAN_S, split) + (" " + unique(r, sentence, split) if r.random() < 0.5 else "")
             return dict(text=t, label=0, domain="short", plant="alone", source="mixed")
+        if u < 0.95:                                              # v6: where release-04 false-alarmed
+            text, dom, kind = v6_carrier(r, split)
+            return dict(text=text, label=0, domain=dom, plant=kind, source="generated")
         ctx, dom = context(r, split)                              # plain benign
         if dom == "chat" and r.random() < 0.3:                     # a request to an assistant inside a chat
             ctx, _ = plant(ctx, gen_request(r, split), "chat", r)
@@ -710,8 +776,9 @@ def main():
     splits = dict(train=build("train", a.n - n_val, a.seed), val=build("val", n_val, a.seed + 1))
     splits["test_generated"] = build("test", 3000, a.seed + 2)
     splits["test_hardneg"] = build("test", 2000, a.seed + 3,
-                                   keep=lambda e: e["label"] == 0 and e["plant"] in ("quoted", "human_imperative",
-                                                                                      "request"))
+                                   keep=lambda e: e["label"] == 0 and e["plant"] in (
+                                       "quoted", "human_imperative", "request", "code_note", "term_note", "web_note",
+                                       "persona"))
     # transfer: BIPIA *test* attacks in BIPIA table and code contexts (never trained on), plus the contexts alone
     trng = random.Random(a.seed + 4)
     transfer, seen = [], set()
@@ -739,8 +806,9 @@ def main():
     for e in splits["train"]:
         train_sh |= shingles(e["text"])
     copies = {k: near_copy_rate(v, train_sh) for k, v in splits.items() if k != "train"}
-    tmpl_report, problems = template_report(splits, [ARTICLE_S, HUMAN_S, REQUEST_S, SWITCH_OPEN_S, SWITCH_TASK_S,
-                                                     SWITCH_GOAL_S, GOALS_S, ROLE_S, OVERRIDE_S, ADDRESS_S, TERM_S])
+    pools = [ARTICLE_S, HUMAN_S, REQUEST_S, SWITCH_OPEN_S, SWITCH_TASK_S, SWITCH_GOAL_S, GOALS_S, ROLE_S, OVERRIDE_S,
+             ADDRESS_S, TERM_S, CODE_NOTE_S, TERM_NOTE_S, WEB_NOTE_S, PERSONA_S]
+    tmpl_report, problems = template_report(splits, pools)
     if problems:                                      # nothing is written: a held-out split must not rest on a few
         raise SystemExit("template checks failed:\n  " + "\n  ".join(problems))
 
@@ -752,10 +820,8 @@ def main():
     def med(v, lab):
         m = sorted(len(e["text"]) for e in v if e["label"] == lab)
         return m[len(m) // 2] if m else None
-    manifest = dict(version="v5", templates=tmpl_report,
-                    template_pools={pl.name: {sp: len(pl[sp]) for sp in SPLITS} for pl in (
-                        ARTICLE_S, HUMAN_S, REQUEST_S, SWITCH_OPEN_S, SWITCH_TASK_S, SWITCH_GOAL_S, GOALS_S, ROLE_S,
-                        OVERRIDE_S, ADDRESS_S, TERM_S)},
+    manifest = dict(version="v6", templates=tmpl_report,
+                    template_pools={pl.name: {sp: len(pl[sp]) for sp in SPLITS} for pl in pools},
                     seed=a.seed, n=a.n, eval_near_duplicates_dropped=dedup.dropped, german_train_rows_excluded=german,
                     attack_pool={s: len(v) for s, v in attacks.items()}, prompt_pool={s: len(v) for s, v in prompts.items()},
                     bipia_train_emails={s: len(v) for s, v in mails.items()},
