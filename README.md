@@ -125,7 +125,7 @@ was read.</sub>
   meaning: *"the article about GPU prices"*.
 - **You can always see it.** An icon in the notification area shows when your screen is being read: an eye while
   windows are watched, lines of text while pixels are read, pause bars when paused, a slashed ring when nothing is
-  read, and a red dot while history records. Hover over it for the status in words; click it for details and a key.
+  read, and a red dot while history records. Hover over it for the status in words; click it for details, a key and every setting.
 
 ## The four questions setup asks
 
@@ -206,6 +206,7 @@ unchanged, and `scribe_status` says what is missing.
 
 ## Learn more
 
+- [What it's for, and every idea](docs/APPLICATIONS.md): uses, what ships, what's planned, what was rejected
 - [How it works and why](docs/DESIGN.md): the source order, the privacy model, prior art
 - [Reference](docs/REFERENCE.md): every setting, and what is read and stored
 - [Prompt-injection flags](docs/INJECTION.md): what is caught, measured on public sets
