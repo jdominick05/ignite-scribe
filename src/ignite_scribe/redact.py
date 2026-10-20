@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from . import injection
 from .snapshot import Snapshot, TextBlock, Window
 
 DEFAULT_EXCLUDE_PROCESSES = ["keepass.exe", "keepassxc.exe", "1password.exe", "bitwarden.exe", "dashlane.exe",
@@ -100,7 +101,7 @@ class Policy:
         windows, withheld, secrets = [], 0, 0
         for w in snap.windows:
             if self.excluded(w):
-                windows.append(replace(w, title=WITHHELD, text=[], elements=[], redacted=True))
+                windows.append(replace(w, title=WITHHELD, text=[], elements=[], flags=[], redacted=True))
                 withheld += 1
                 continue
             title, k = scrub(w.title)
@@ -110,5 +111,8 @@ class Policy:
                 t, k = scrub(b.text)
                 secrets += k
                 blocks.append(TextBlock(t, b.rect, b.source, b.role))
-            windows.append(replace(w, title=title, text=blocks))
-        return replace(snap, windows=windows), dict(windows_withheld=withheld, secrets_withheld=secrets)
+            clean = replace(w, title=title, text=blocks)
+            clean.flags = injection.flag_window(clean)     # on scrubbed text only: an excerpt holds no secret
+            windows.append(clean)
+        return replace(snap, windows=windows), dict(windows_withheld=withheld, secrets_withheld=secrets,
+                                                    windows_flagged=sum(1 for w in windows if w.flags))

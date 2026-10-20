@@ -12,6 +12,7 @@ walk that hit its cap) is not reported as text disappearing.
 """
 from __future__ import annotations
 
+from .injection import flag_lines
 from .snapshot import Snapshot, Window
 
 MAX_LINES = 40          # lines listed per content event
@@ -100,6 +101,9 @@ def diff(old: Snapshot | None, new: Snapshot) -> list[dict]:
                         break
                     shown.append(ln)
                     size += len(ln)
-                events.append(dict(kind="content", added=shown, added_total=len(added), removed=removed,
-                                   **_who(w)))
+                ev = dict(kind="content", added=shown, added_total=len(added), removed=removed, **_who(w))
+                fl = flag_lines(shown, w.process)
+                if fl:
+                    ev["flags"] = fl
+                events.append(ev)
     return events

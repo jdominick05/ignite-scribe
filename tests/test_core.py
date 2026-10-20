@@ -40,7 +40,7 @@ def test_policy_withholds_excluded_windows_and_keeps_position():
     assert by[2].title == WITHHELD and by[2].redacted and by[2].rect.right == 900   # password manager
     assert by[3].redacted                                                          # title pattern: bank / sign in
     assert "[github token withheld]" in by[1].text[0].text and "withheld" in by[1].text[1].text
-    assert counts == dict(windows_withheld=2, secrets_withheld=2)
+    assert counts == dict(windows_withheld=2, secrets_withheld=2, windows_flagged=0)
     assert fake().windows[1].title == "Vault"   # the source snapshot is not modified
 
 

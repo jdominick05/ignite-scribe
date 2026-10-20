@@ -21,6 +21,7 @@ from __future__ import annotations
 import time
 
 from .changes import compact
+from .injection import flag_lines
 
 MAX_EVENTS = 60
 
@@ -94,6 +95,10 @@ def wait_for(watcher, text: str | None = None, gone: str | None = None, match: s
         if matched is not None:
             step = min(step, quiet_s - (now - max(matched, last_change)))
         watcher.wait(cursor, min(max(step, 0.01), 0.5))   # wake on an event, and re-check at least every 0.5 s
+    if hit is not None:
+        fl = flag_lines([hit["line"]], hit["window"].get("process") or "")
+        if fl:
+            hit["flags"] = fl
     evs = compact(seen)
     out = dict(result=result, waited_s=round(clock() - t0, 2), since=base, next_since=cursor, hit=hit,
                events_total=len(evs))

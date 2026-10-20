@@ -43,6 +43,30 @@ anything leaves the engine:
 
 Every result is also marked as untrusted, because text on screen can be written to instruct an agent.
 
+**Injection flags.** Text that looks written to instruct an agent gets a `flags` entry on its window (and on the
+change event that brought it), with the kind, an excerpt, where it came from (title, UI Automation or OCR) and the
+app category (browser, mail, chat, terminal, editor). A flag is metadata, never a filter, and a window without one is
+not thereby safe.
+- It runs locally at capture time, on already-scrubbed text, so an excerpt never holds a secret. Withheld windows
+  are never scanned.
+- Before matching, the text is normalized (NFKC, casefold, invisible characters dropped).
+- Invisible characters are a finding of their own: Unicode tag characters, bidi controls, zero-width runs. The
+  user cannot see them, but a model reads them.
+- This first tier is patterns: English, plus German, French and Spanish overrides. It is cheap, adding 0.23 ms
+  to a watcher refresh with its cache, and precise, but it misses most injections that are phrased as ordinary
+  requests:
+
+| set (`tools/injection_eval.py`, test splits) | recall | false positives |
+|---|---:|---:|
+| deepset/prompt-injections (direct, EN/DE) | 26.7% of 60 | 0 of 56 |
+| Lakera/gandalf_ignore_instructions (direct) | 64.3% of 112 | n/a |
+| microsoft/BIPIA, attacks planted in emails (indirect) | 12.0% of 250 | 0 of 50 emails |
+| synthetic UI lines (seed 100) | n/a | 0 of 500 |
+| this desktop, 60 s of the watcher's state | n/a | 0 flagged windows |
+
+A classifier tier, in the vision worker and later on the NPU, is next. The patterns were tuned on the train splits
+only.
+
 **Waiting instead of polling.** `wait_for` blocks until text appears (`text`), goes (`gone`), or anything
 changes, and with `quiet_s` until the screen settles. Text already on screen counts, and so does text that came and
 went after `since`, so nothing between two calls is missed. An agent that clicks or types with its own tools (a
