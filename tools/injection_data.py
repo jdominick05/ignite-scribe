@@ -177,6 +177,11 @@ def template_report(splits: dict, pools: list[Templates]) -> tuple[dict, list[st
             for t in set(e.get("tmpl", [])):
                 if t.split(":")[0] not in CARRIER_POOLS:
                     share[t] = share.get(t, 0) + 1
+        if k not in ("train", "test_transfer"):           # v6.1: ids present in the written rows, not just assigned
+            for pool in pools:
+                if len(used.get(pool.name, ())) < MIN_TEMPLATES:
+                    problems.append(f"{k}: {len(used.get(pool.name, ()))} {pool.name} templates in its rows "
+                                    f"(< {MIN_TEMPLATES})")
         top = max(share.items(), key=lambda kv: kv[1]) if share else (None, 0)
         out[k] = dict(templates_used={pn: len(v) for pn, v in sorted(used.items())},
                       max_benign_share=dict(template=top[0], share=round(top[1] / max(len(benign), 1), 4)))
@@ -742,13 +747,14 @@ def main():
             else:
                 t = pick(r, HUMAN_S, split) + (" " + unique(r, sentence, split) if r.random() < 0.5 else "")
             return dict(text=t, label=0, domain="short", plant="alone", source="mixed")
-        if u < 0.95:                                              # v6: where release-04 false-alarmed
+        if u < 0.935:                                             # v6: where release-04 false-alarmed
             text, dom, kind = v6_carrier(r, split)
             return dict(text=text, label=0, domain=dom, plant=kind, source="generated")
-        ctx, dom = context(r, split)                              # plain benign
-        if dom == "chat" and r.random() < 0.3:                     # a request to an assistant inside a chat
+        if u < 0.955:                                             # a request to an assistant inside a chat (v6.1:
+            ctx = gen_chat(r, split)                              # its own slice; v6 left 2-5 templates per split)
             ctx, _ = plant(ctx, gen_request(r, split), "chat", r)
-            return dict(text=ctx, label=0, domain=dom, plant="request", source="mixed")
+            return dict(text=ctx, label=0, domain="chat", plant="request", source="mixed")
+        ctx, dom = context(r, split)                              # plain benign
         return dict(text=ctx, label=0, domain=dom, plant="none", source="mixed")
 
     def finish(e):
@@ -820,7 +826,7 @@ def main():
     def med(v, lab):
         m = sorted(len(e["text"]) for e in v if e["label"] == lab)
         return m[len(m) // 2] if m else None
-    manifest = dict(version="v6", templates=tmpl_report,
+    manifest = dict(version="v6.1", templates=tmpl_report,
                     template_pools={pl.name: {sp: len(pl[sp]) for sp in SPLITS} for pl in pools},
                     seed=a.seed, n=a.n, eval_near_duplicates_dropped=dedup.dropped, german_train_rows_excluded=german,
                     attack_pool={s: len(v) for s, v in attacks.items()}, prompt_pool={s: len(v) for s, v in prompts.items()},
