@@ -193,3 +193,15 @@ def test_charset_masks_classes_before_the_argmax():
     out = r._mask(lp)
     assert out[0].argmax() == 1 and np.isneginf(out[0, 2])        # Chi can no longer win
     assert np.array_equal(lp[1], np.log(np.array([0.1, 0.8, 0.1, 0.0]) + 1e-9))   # the input is not modified
+
+
+def test_homoglyphs_and_cedilla_spaces_are_mapped_back():
+    from ignite_scribe.scriberec_rec import ScribeRec
+    r = ScribeRec.__new__(ScribeRec)
+    r.latin_twins = True
+    assert r._post("\u2169ML \u2171 \u222aSER \u221fOG \u2109ile") == "XML ii USER LOG File"
+    assert r._post("a \u00b8 b") == "a b" and r._post("foo\u00b8bar") == "foo bar"
+    assert r._post("C:\u2216dir\u2215f \u2217 \u223c \u2010 \u2212 \u2032q\u2032 \u2033") == "C:\\dir/f * ~ - - 'q' \""
+    assert r._post("\u0391\u0392\u0393") == "AB\u0393"                    # a real Greek letter stays
+    r.latin_twins = False
+    assert r._post("\u2169") == "\u2169"

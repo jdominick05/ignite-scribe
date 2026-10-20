@@ -19,7 +19,9 @@ when every bucket in use runs on the NPU.
 """
 from __future__ import annotations
 
+import re
 import time
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -28,10 +30,17 @@ from . import ocr
 
 BUCKETS = (320, 640, 960, 1280)
 H = 80
-# release-01 sometimes reads a Latin capital as its Greek twin (its symbol generator drew both from the same
-# glyphs); screen text here is English, so the twins are mapped back until a fine-tune fixes it.
-LATIN_TWINS = str.maketrans("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ",
-                            "ABEZHIKMNOPTYX")
+# release-01/02 sometimes read a Latin letter or ASCII punctuation as a dictionary symbol drawn like it: the
+# symbol generator sampled those twins (Model Work, train/data.py HOMOGLYPHS; fixed for r02b). Screen text here
+# is English, so they are mapped back: Greek capitals, Roman numerals (NFKC: Ⅻ -> XII), letterlike symbols and
+# punctuation twins. A cedilla between two words stood for a space (tools/ocr_diag.py); after a space it is dropped.
+LATIN_TWINS = str.maketrans({**dict(zip("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ", "ABEZHIKMNOPTYX")),
+                             **{chr(c): unicodedata.normalize("NFKC", chr(c)) for c in range(0x2160, 0x2180)
+                                if unicodedata.normalize("NFKC", chr(c)).isascii()},
+                             "∪": "U", "∟": "L", "℉": "F", "℮": "e", "‐": "-", "‑": "-", "‒": "-", "−": "-",
+                             "‚": ",", "‛": "'", "′": "'", "´": "'", "″": '"', "․": ".", "∶": ":", "∕": "/",
+                             "∖": "\\", "∗": "*", "∼": "~", "﹥": ">", "‹": "<", "›": ">"})
+CEDILLA_AFTER_SPACE, CEDILLA_WORDS = re.compile(r"(?<=\s)¸\s?"), re.compile(r"(?<=\w)¸(?=\w)")
 
 
 def prepare(rgb: np.ndarray) -> tuple[np.ndarray, int]:
@@ -148,7 +157,10 @@ class ScribeRec:
         return lp
 
     def _post(self, text: str) -> str:
-        return text.translate(LATIN_TWINS) if self.latin_twins else text
+        if not self.latin_twins:
+            return text
+        text = CEDILLA_WORDS.sub(" ", CEDILLA_AFTER_SPACE.sub("", text))
+        return text.translate(LATIN_TWINS)
 
     def _npu_run(self, s, x):
         y, st = s.run(x)
