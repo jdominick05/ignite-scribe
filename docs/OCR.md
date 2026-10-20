@@ -352,12 +352,33 @@ contaminated (CER 0.67, with the line counts drifting) and is not counted.
 - **Plain-ASCII lines:** ScribeRec 0.026, PP-OCRv5 0.006.
 - **Non-ASCII output:** ScribeRec emits it in 20 lines where PP-OCRv5 has 4-8. This fits its Greek-twin habit
   and other lookalikes the twin map does not cover.
-- **Likely cause: the training renders.** Cascadia Mono, Windows Terminal's font, is not among the training faces
-  (Segoe UI, Tahoma, Arial, Calibri, Consolas, Verdana), and neither are terminal colour schemes.
+- ~~Likely cause: Cascadia Mono is not among the training faces.~~ **Wrong:** that list is the *eval-set*
+  generator's (`tools/gdi_lines.py`). ScribeRec's training generator has Cascadia Mono and Cascadia Code, every
+  Cascadia weight, 30% dark-theme lines and 15% coloured text (Model Work, 2026-10-19).
+
+**The diagnosis** (`tools/ocr_diag.py`, CPU; aggregate only, no text or crops kept):
+- **Method:** a live terminal, three samples, 226 lines. Truth is the lines present in UI Automation both before
+  and after each capture. All three recognizers read the same detector crops.
+- **CER:** ScribeRec as shipped 0.079; ScribeRec with every class outside printable ASCII masked before the argmax
+  0.0738; PP-OCRv5 0.0214. That terminal held UI glyphs (⏵, ·, ✔), so CERs are higher than in the table above, but
+  the ratio holds (3.7x).
+- **Charset masking is not the fix:** it removes about 7% of ScribeRec's errors.
+- **Spaces are the biggest error class:**
+  - a space read as `-` 47 times, and dropped 47 times;
+  - a space read as `'`, `¸` or `"` 31 times;
+  - then lowercase confusions: l -> i 13, o -> e 9, u -> t 9, c -> e 6.
+- **Crop heights** before the resize to 80 are mostly 28-39 px (CER 0.05-0.09); below 20 px it rises to
+  0.26-0.33.
+- **Crops come from the detector's ink boxes, not UIA ranges.** The median ink padding is 2 px above and below,
+  but 46% of crops have none above and 38% none below. Training lines have 0-6 px.
+- **The terminal:** Windows Terminal at its defaults (Cascadia Mono 12 pt, grayscale antialiasing, AtlasEngine,
+  i.e. DirectWrite), at 120 DPI (125%). Every training line is GDI `DrawTextW` with ClearType.
 
 **What follows.**
-- PP-OCRv5's recognizer is the more accurate one on real screens today.
-- Always-on OCR still needs ScribeRec, since it runs on the NPU only.
-- The next step is a fine-tune (release-02) with Cascadia Mono and other terminal and editor faces, dark
-  themes, and a character set limited to what screens show.
-- Then a static, known-text window, so errors can be inspected and not only counted.
+- PP-OCRv5's recognizer is the more accurate one on real screens today. Always-on OCR still needs ScribeRec,
+  since it runs on the NPU only.
+- **The leading suspects** for release-02 (Model Work's, consistent with the above):
+  - the renderer: a DirectWrite path with grayscale antialiasing in the generator;
+  - crop geometry: more zero-padding crops, matching the detector's boxes;
+  - space handling at monospace cell gaps.
+- `ScribeRec(charset=...)` exists for the mask, which is off by default.

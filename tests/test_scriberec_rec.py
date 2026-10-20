@@ -181,3 +181,15 @@ def test_split_cuts_in_the_widest_blank_run_and_spaces_only_word_gaps():
     x[30:50, 1200:1220] = 0.0                                  # only the letter gap is left
     (_, c, gap), _ = R.split_points(x)
     assert 1100 <= c < 1104 and gap is False                    # cut there, but join without a space
+
+
+def test_charset_masks_classes_before_the_argmax():
+    import numpy as np
+    from ignite_scribe.scriberec_rec import ScribeRec
+    r = ScribeRec.__new__(ScribeRec)
+    r.chars = ["<blank>", "a", "Χ", " "]                    # blank, a, Greek Chi, space
+    r.masked = np.array([i for i, c in enumerate(r.chars) if i and c != " " and c not in "aX"], np.int64)
+    lp = np.log(np.array([[0.1, 0.3, 0.6, 0.0], [0.1, 0.8, 0.1, 0.0]]) + 1e-9)
+    out = r._mask(lp)
+    assert out[0].argmax() == 1 and np.isneginf(out[0, 2])        # Chi can no longer win
+    assert np.array_equal(lp[1], np.log(np.array([0.1, 0.8, 0.1, 0.0]) + 1e-9))   # the input is not modified

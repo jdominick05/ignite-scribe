@@ -88,11 +88,12 @@ def split_points(x: np.ndarray, limit: int = BUCKETS[-1], window: int = 320,
 class ScribeRec:
     def __init__(self, model_dir: str | Path, dict_path: str | Path, containers: dict[int, str] | None = None,
                  threads: int = 4, prefer_int8: bool = True, require_npu: bool = False,
-                 latin_twins: bool = True):
+                 latin_twins: bool = True, charset: str | None = None):
         """``containers``: {bucket width: .ignite path} for the NPU; missing buckets run on ONNX Runtime (the XINT8
         backbone when present, as it matches the NPU's arithmetic, else the float one). If any NPU bucket fails to
         open, the ones already open are closed and every bucket runs on the CPU (``npu_error`` says why), or
-        the error is raised with ``require_npu``."""
+        the error is raised with ``require_npu``. ``charset``: when given, only these characters (and the blank and
+        space) can be decoded; every other class is masked before the greedy argmax."""
         import onnxruntime as ort
         d = Path(model_dir)
         o = ort.SessionOptions()
@@ -105,6 +106,8 @@ class ScribeRec:
         self._npu = []
         self.npu_error = None
         self.latin_twins = latin_twins
+        self.masked = None if charset is None else np.array(
+            [i for i, c in enumerate(self.chars) if i != 0 and c != " " and c not in charset], np.int64)
         npu = {w: c for w, c in (containers or {}).items() if w in BUCKETS and Path(c).is_file()}
         try:                                          # all NPU buckets open, or none stays open
             for w, c in sorted(npu.items()):
@@ -137,6 +140,13 @@ class ScribeRec:
         self.ms = dict(prepare=0.0, backbone=0.0, tail=0.0, decode=0.0, lines=0)   # where the time goes
         self.npu_ms: dict[str, float] = {}        # DenseTensorSession's own split of the backbone call
 
+    def _mask(self, lp: np.ndarray) -> np.ndarray:
+        if self.masked is None or not len(self.masked):
+            return lp
+        lp = lp.copy()
+        lp[:, self.masked] = -np.inf
+        return lp
+
     def _post(self, text: str) -> str:
         return text.translate(LATIN_TWINS) if self.latin_twins else text
 
@@ -167,7 +177,7 @@ class ScribeRec:
         t1 = time.perf_counter()
         lp = self.tail.run(None, {self.tail.get_inputs()[0].name: f.astype(np.float32)})[0][0]
         t2 = time.perf_counter()
-        out = ocr.ctc_decode(np.exp(lp[:min(w32, b) // 4]), self.chars)
+        out = ocr.ctc_decode(np.exp(self._mask(lp[:min(w32, b) // 4])), self.chars)
         self.ms["backbone"] += (t1 - t0) * 1000
         self.ms["tail"] += (t2 - t1) * 1000
         self.ms["decode"] += (time.perf_counter() - t2) * 1000
@@ -209,7 +219,7 @@ class ScribeRec:
                                           np.concatenate(feats).astype(np.float32)})[0]
                 t2 = time.perf_counter()
                 for r, j in enumerate(group):
-                    decoded[j] = ocr.ctc_decode(np.exp(lp[r][:min(w32s[j], b) // 4]), self.chars)
+                    decoded[j] = ocr.ctc_decode(np.exp(self._mask(lp[r][:min(w32s[j], b) // 4])), self.chars)
                 self.ms["backbone"] += (t1 - t0) * 1000
                 self.ms["tail"] += (t2 - t1) * 1000
                 self.ms["decode"] += (time.perf_counter() - t2) * 1000
