@@ -134,9 +134,22 @@ document scored as the max over its 512/256 windows, the checkpoint with the low
 | `test_hardneg` | (49.7%) | **(1.05%)** | (49.9%) | classifier <= 5% | met |
 | `test_transfer` | 12.7% (0%) | 56.7% (3.0%) | **60.0% (3.0%)** | >= 50%, <= 5% | met |
 | `test_generated` | 69.3% (25.2%) | 84.8% (0.7%) | 90.6% (25.2%) | reported | |
-| this desktop, 60 s | | | | reported | not yet run |
+| this desktop, 60 s | 0 windows | see below | | reported | |
 
-**Cost.** 58 ms per 512-token window on the 780M (fp16). Scoring happens only when a window's text is new.
+**Cost.** 58 ms per 512-token window on the 780M (fp16).
+
+**Live desktop** (`tools/injection_live.py --secure`; counts only, no text printed or kept):
+- **The first run showed a design flaw.** Secure mode scored a window's whole text, so a terminal that added one
+  line was re-scored in full. In 60 s only 20 texts were scored, 182 were left queued, and a batch took 14.3 s.
+- **The fix: incremental scoring.** Each window's text is cut into pieces of about 1,500 characters at
+  content-defined line boundaries (`secure.chunks`), with one line of overlap. Each piece is scored once, by its
+  digest, and a window scores as its worst piece. A terminal that adds a line now re-scores one or two pieces.
+- **With the fix, two 60 s runs:**
+  - Run 1: 462 pieces scored, none left queued, 75.6 ms per batch, Policy.apply 1.71 ms against 1.49 ms. 9 pieces
+    were flagged, all in a terminal window, in 58 of 60 samples. That terminal ran this work session, whose
+    scrollback held its own injection test strings at the time. The cause could not be checked without reading
+    the text, so the flags are reported as they are.
+  - Run 2: 210 pieces seen, all scored, **0 flagged**.
 
 **What it means.**
 - Secure mode more than triples the patterns' recall on attacks planted in email (12.0% -> 42.8%), with no false

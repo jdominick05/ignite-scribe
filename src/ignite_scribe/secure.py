@@ -6,7 +6,8 @@ Opt-in (``"secure_mode": true`` in the policy, or ``IGNITE_SCRIBE_SECURE=1``). T
 worker (``embed_worker``, DirectML, below-normal priority, exits when idle), never in this process and never on the
 CPU: when DirectML is unavailable, secure mode stays off and ``scribe_status`` says why.
 
-Scoring is asynchronous. ``Policy.apply`` asks ``lookup`` for each window's (already scrubbed) text: a known score is
+Scoring is asynchronous and incremental. Each window's (already scrubbed) text is cut into pieces of about one model
+window (``chunks``), and ``Policy.apply`` asks ``lookup`` for each piece: a known score is
 returned at once, an unknown text is queued and scored in the background, and ``on_scored`` asks the watcher to
 re-apply the policy, so the flag appears a moment later. Scores are kept by a digest of the text, not the text.
 A flag: ``{"kind": "classifier", "score": p, "source": "window", "app": ...}`` when ``p`` reaches the model's
@@ -57,6 +58,28 @@ def available() -> tuple[bool, str]:
 
 def window_text(w) -> str:
     return "\n".join([w.title or ""] + [b.text for b in w.text])
+
+
+CHUNK_CHARS = 1500      # about one 512-token window
+
+
+def chunks(text: str, target: int = CHUNK_CHARS) -> list[str]:
+    """Cut text into pieces of about ``target`` characters at content-defined line boundaries: a line whose digest
+    is 0 mod 8 ends a piece, as does reaching ``target``. Boundaries depend on the lines themselves, not their
+    position, so a terminal that adds or scrolls lines re-scores only the pieces that changed. Each piece starts with
+    the previous piece's last line, so an instruction split across a boundary is still seen whole."""
+    lines = [l for l in text.split("\n") if l.strip()]
+    out, cur, size = [], [], 0
+    for line in lines:
+        line = line[:target]                       # one very long line still makes a bounded piece
+        cur.append(line)
+        size += len(line) + 1
+        if size >= target or digest(line)[0] % 8 == 0:
+            out.append("\n".join(cur))
+            cur, size = [line], len(line) + 1         # overlap: the boundary line opens the next piece
+    if len(cur) > 1 or not out:
+        out.append("\n".join(cur))
+    return [c for c in out if c.strip()]
 
 
 def digest(text: str) -> bytes:
@@ -119,7 +142,8 @@ class Scanner:
         """The classifier flag for a window, when its text is scored at or above the threshold."""
         if getattr(w, "redacted", False):
             return None
-        p = self.lookup(window_text(w))
+        known = [p for p in (self.lookup(c) for c in chunks(window_text(w))) if p is not None]
+        p = max(known, default=None)                   # the window scores as its most suspicious piece
         if p is None or self.threshold is None or p < self.threshold:
             return None
         return dict(kind="classifier", score=round(p, 3), source="window", role=None, app=category)

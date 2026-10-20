@@ -122,7 +122,8 @@ events in memory only, unless history is on.
 redacted text.
 - It runs in the embedding worker on DirectML, at below-normal priority, and exits after 60 s idle. When DirectML
   is unavailable it stays off; it never runs on the CPU. `scribe_status` says why.
-- Scoring is asynchronous: a new text is queued, and its `classifier` flag (with its score) appears on the next
+- Scoring is asynchronous and incremental: a window's text is cut into pieces of about 1,500 characters, each
+  scored once; a new piece is queued, and the window's `classifier` flag (with its score) appears on the next
   refresh. Scores are kept by a digest of the text, not the text.
 - Withheld windows are never scored.
 - The model is looked up in `IGNITE_SCRIBE_SECURE_MODEL`, then `%LOCALAPPDATA%\ignite-scribe\models\injection\scribe-guard`.

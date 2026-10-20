@@ -4,7 +4,8 @@
 
 Runs the watcher for ``--seconds`` and, every second, counts the flagged windows in its redacted state by app
 category and kind. It also times ``Policy.apply`` with and without the flag on that state. No text, title or
-excerpt is printed or kept.
+excerpt is printed or kept. ``--secure`` also runs secure mode's classifier (secure.py, on the iGPU), as the
+server would, and reports how many windows it scored and flagged.
 """
 import argparse
 import collections
@@ -19,12 +20,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seconds", type=float, default=60)
+    ap.add_argument("--secure", action="store_true", help="also run secure mode's classifier on the iGPU")
     a = ap.parse_args()
     from ignite_scribe import injection, redact
     from ignite_scribe.redact import Policy
     from ignite_scribe.watch import Watcher
     pol = Policy()
+    scanner = worker = None
+    if a.secure:
+        from ignite_scribe import secure
+        from ignite_scribe.semantic import EmbedWorker
+        ok, why = secure.available()
+        if not ok:
+            raise SystemExit(why)
+        worker = EmbedWorker()
+        holder = {}
+        scanner = secure.Scanner(worker, on_scored=lambda: holder["w"].reapply())
+        pol.scanner = scanner.start()
     w = Watcher(pol).start()
+    if scanner is not None:
+        holder["w"] = w
     samples, flagged_samples, windows_seen = 0, 0, 0
     by = collections.Counter()
     t_end = time.time() + a.seconds
@@ -43,6 +58,12 @@ def main():
                 by[f"{f['app']}/{f['kind']}"] += 1
     st = w.status()
     w.stop()
+    secure_status = None
+    if scanner is not None:
+        secure_status = {k: v for k, v in scanner.status().items() if k != "model"}
+        scanner.stop()
+        pol.scanner = None
+        worker.close()
     ms_with = ms_without = None
     if snap is not None:
         t = time.perf_counter()
@@ -63,7 +84,7 @@ def main():
                           apply_ms_with_flag=round(ms_with, 2) if ms_with else None,
                           apply_ms_without=round(ms_without, 2) if ms_without else None,
                           refresh_ms_avg=round(st.get("refresh_ms_total", 0) / max(st.get("refreshes", 1), 1), 1)
-                          if "refresh_ms_total" in st else st.get("refresh_ms_avg"))))
+                          if "refresh_ms_total" in st else st.get("refresh_ms_avg"), secure=secure_status)))
 
 
 if __name__ == "__main__":
