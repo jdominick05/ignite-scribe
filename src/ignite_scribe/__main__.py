@@ -1,6 +1,10 @@
 # Copyright (C) 2026 The ignite-scribe contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""python -m ignite_scribe snapshot [--json] [--policy FILE] [--no-text]
+"""ignite-scribe setup [--history|--no-history] [--always-on|--no-always-on] [--service|--no-service]
+              [--mcp-config FILE] [--yes]
+ignite-scribe service {install,uninstall,start,stop,restart,status}
+ignite-scribe status
+python -m ignite_scribe snapshot [--json] [--policy FILE] [--no-text]
 python -m ignite_scribe watch [--seconds N] [--policy FILE] [--raw]
 python -m ignite_scribe history {status,search,purge} [QUERY] [--since 2h]
 python -m ignite_scribe pause | resume       (always-on OCR)
@@ -33,7 +37,48 @@ def main(argv=None) -> int:
     sub.add_parser("pause", help="pause always-on OCR (it holds no NPU context while paused)")
     sub.add_parser("resume", help="resume always-on OCR")
     sub.add_parser("mcp", help="serve the MCP tools on stdio")
+    st = sub.add_parser("setup", help="choose history, always-on OCR and the background service; connect an agent")
+    for flag, name in (("history", "history"), ("always-on", "always_on"), ("service", "service")):
+        g = st.add_mutually_exclusive_group()
+        g.add_argument(f"--{flag}", dest=name, action="store_true", default=None)
+        g.add_argument(f"--no-{flag}", dest=name, action="store_false")
+    st.add_argument("--mcp-config", help="also add the server to this JSON config file (an mcpServers object)")
+    st.add_argument("--yes", action="store_true", help="no questions: keep current answers where not given")
+    sv = sub.add_parser("service", help="the background process started at logon")
+    sv.add_argument("action", choices=["install", "uninstall", "start", "stop", "restart", "status"])
+    sub.add_parser("daemon", help="run the background process in the foreground (what the logon entry runs)")
+    sub.add_parser("status", help="what ignite-scribe is doing now, across sessions")
     a = ap.parse_args(argv)
+    if a.cmd == "setup":
+        from .configure import run
+        return run(a.history, a.always_on, a.service, a.mcp_config, a.yes)
+    if a.cmd == "daemon":
+        from .service import daemon
+        return daemon()
+    if a.cmd == "service":
+        from . import service as svc
+        if a.action == "install":
+            print(f"installed: {svc.install()}", file=sys.stderr)
+        elif a.action == "uninstall":
+            svc.uninstall()
+            print("uninstalled", file=sys.stderr)
+        elif a.action == "start":
+            print(f"running, pid {svc.start()}", file=sys.stderr)
+        elif a.action == "stop":
+            print("stopped" if svc.stop() else "did not stop in time", file=sys.stderr)
+        elif a.action == "restart":
+            svc.stop()
+            print(f"running, pid {svc.start()}", file=sys.stderr)
+        print(json.dumps(svc.status(), indent=1))
+        return 0
+    if a.cmd == "status":
+        from . import service as svc
+        from .always_on import PAUSE_FILE
+        from .tray import read_beacons, summarize
+        beacons = read_beacons()
+        state, tip = summarize(beacons, PAUSE_FILE.exists())
+        print(json.dumps(dict(state=state, summary=tip, service=svc.status(), sessions=beacons), indent=1))
+        return 0
     if a.cmd in ("pause", "resume"):
         from .always_on import PAUSE_FILE
         if a.cmd == "pause":
@@ -68,8 +113,8 @@ def main(argv=None) -> int:
         finally:
             hist.close()
         return 0
-    from .redact import Policy
-    policy = Policy.load(a.policy)
+    from .redact import Policy, policy_path
+    policy = Policy.load(a.policy or policy_path())
     if a.cmd == "watch":
         from .watch import Watcher
         watcher = Watcher(policy).start()

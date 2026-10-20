@@ -17,7 +17,8 @@ Tools:
                          worker; CPU for now, docs/OCR.md), as redacted ``ocr`` text blocks; same opt-in
 
 Every result carries the untrusted-content note, and redaction (``redact.Policy``) runs before anything is
-returned. ``IGNITE_SCRIBE_POLICY`` names a policy file (JSON) merged with the defaults.
+returned. The policy file (JSON, merged with the defaults) is ``IGNITE_SCRIBE_POLICY``, else the one
+``ignite-scribe setup`` writes (``%LOCALAPPDATA%\\ignite-scribe\\policy.json``).
 
 The watcher (``watch.Watcher``) starts on the first screen tool call, not at launch, and lives as long as this
 process: while it runs, ``get_screen_state`` is served from its state, which it keeps current by re-reading only
@@ -148,7 +149,8 @@ class Server:
         created on first use unless a source was injected or ``IGNITE_SCRIBE_WATCH=0``. ``history``: a
         ``history.History`` (tests pass one on a temp file); by default one is opened only when history is
         enabled (``IGNITE_SCRIBE_HISTORY=1`` or the policy's ``history``) and a watcher can feed it."""
-        self.policy = policy if policy is not None else Policy.load(os.environ.get("IGNITE_SCRIBE_POLICY"))
+        from .redact import policy_path
+        self.policy = policy if policy is not None else Policy.load(policy_path())
         from . import history as _history
         self.history = history
         self.history_on = history is not None or _history.enabled(self.policy)

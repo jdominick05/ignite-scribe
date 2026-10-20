@@ -18,6 +18,7 @@ false, "history": false}``, merged with the defaults. Patterns are case-insensit
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -69,6 +70,21 @@ def scrub(text: str) -> tuple[str, int]:
             return "[card number withheld]"
         return m.group(0)
     return CARD.sub(card, text), n
+
+
+def default_policy_path() -> Path:
+    """Where ``ignite-scribe setup`` writes the user's policy."""
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ignite-scribe" / "policy.json"
+
+
+def policy_path() -> str | None:
+    """The policy file in force: ``IGNITE_SCRIBE_POLICY`` when set (empty: none), else the user's
+    ``policy.json`` when it exists."""
+    v = os.environ.get("IGNITE_SCRIBE_POLICY")
+    if v is not None:
+        return v or None
+    p = default_policy_path()
+    return str(p) if p.is_file() else None
 
 
 @dataclass
