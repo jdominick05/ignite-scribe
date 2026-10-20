@@ -73,10 +73,11 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 ## 🔨 In progress
 
 - **Secure mode:** a prompt-injection classifier trained on screen text that runs on the iGPU only, never the CPU.
-  - Release-01 is measured: attacks planted in email are caught at 12% -> 43% with no false alarms; it met 4 of 7
-    pre-registered targets, and short, direct attacks are the gap ([INJECTION.md](INJECTION.md)).
+  - Release-05 is installed (2026-10-20): attacks planted in email are caught at 12% -> 63% with no false alarms;
+    it meets 5 of 7 pre-registered targets. Short, direct attacks (deepset, Gandalf) are the gap
+    ([INJECTION.md](INJECTION.md)).
   - Scoring is incremental, at 75.6 ms per batch live.
-  - Release-02 and a download for installed copies are next.
+  - A download for installed copies is next.
 - **ScribeRec on busy terminal UIs:** release-03 beats PP-OCRv5 on a static terminal, but on a live TUI full of
   box-drawing rules and spinner glyphs it still makes about 3x PP-OCRv5's errors ([OCR.md](OCR.md)). Next: rule
   and box rows as neighbours in the generator.

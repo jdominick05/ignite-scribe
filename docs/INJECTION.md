@@ -168,3 +168,55 @@ document scored as the max over its 512/256 windows, the checkpoint with the low
 - Add more benign text close to real screens, so the threshold can come down without breaking the 0.5% rule.
 - The targets stay as they are. Whether a confident "benign" score should clear a pattern flag (the patterns'
   49.7% on quoted attacks) is a separate decision, not taken.
+
+## Release-05 results (2026-10-20)
+
+Release-02 to -04 did not ship. Two causes, both in the data (`tools/injection_data.py`, versions v3 to v6.1):
+- **Held-out splits rested on one or two templates.** The split by item hash left val and test with 1-2
+  templates from the small pools (ARTICLE: 1 of 15 in test). Val thresholds then did not hold on test: release-04
+  went from 0.46% false positives on val to 2.5% on test. Since v5, every pool has at least 60 templates,
+  split evenly (a tenth each to val and test). Every row records its template ids (`tmpl`), and the builder
+  refuses to write if a held-out split's rows hold fewer than 6 templates of any pool, or if one template is in
+  more than 10% of its benign rows.
+- **Benign screen text that gives orders was missing.** Release-04 (v5 data) caught more attacks but flagged
+  28% of benign code samples, 7-9% of terminal text, and an ordinary browser page on this desktop in 59 of 60
+  samples. v6 adds benign template pools for these: code comments and review notes, CLI and agent-interface
+  lines, web-page text, and role statements aimed at people ("You are the reviewer for this pull request"),
+  about a fifth of benign rows. 20% of planted attacks sit in the same carriers, so a carrier is never a benign
+  cue on its own.
+
+**The model.** Release-04 fine-tuned on v6.1 (Desktop 1, lr 1.5e-5, 2 epochs, the step-250 checkpoint).
+- **Threshold:** 0.99247, chosen on val by the pre-registered rule.
+- **Val at that threshold:** recall 92.0%, benign false positives 0.46%, hard negatives 0.32%.
+
+**Public and held-out tests,** run once on the 780M (DirectML fp16) at that threshold
+(`results/injection_eval_release05_dml.json`). "Either" = patterns or classifier; false-positive rate in brackets.
+`test_generated` and `test_hardneg` are v2's sets, as for release-01.
+
+| set | release-01, either | release-04, either | **release-05, either** | target (either) | |
+|---|---:|---:|---:|---|---|
+| BIPIA planted in emails | 42.8% (0%) | 64.0% (0%) | **63.2%** (0%) | >= 60% | **met** (was missed) |
+| BIPIA benign emails | 0 of 50 | 0 of 50 | **0 of 50** | <= 1 of 50 | met |
+| deepset test, English | 31.6% | 36.8% | **39.5%** (0%) | >= 60% | missed |
+| deepset test, German | 18.2% | 18.2% | 18.2% | reported | |
+| Gandalf test | 77.7% | 84.8% | **88.4%** | >= 90% | missed |
+| seed-100 UI lines | 0% | 0% | **0%** | <= 0.5% | met |
+| `test_hardneg`, classifier alone | (1.05%) | (2.7%) | **(0.10%)** | <= 5% | met |
+| `test_transfer` | 60.0% (3.0%) | 69.3% (10.4%) | **65.3% (3.7%)** | >= 50%, <= 5% | met |
+| `test_generated`, classifier alone | 84.8% (0.70%) | 86.4% (1.46%) | **88.2% (0.19%)** | reported | |
+
+- **Live desktop, 60 s each, the same windows open, back to back** (`injection_live.py --secure`, counts only):
+  release-01 flagged 0 of 60 samples, **release-05 0 of 60**, and release-04 59 of 60 (the browser page it
+  flagged before, still on screen: a control). A 30 s run through the default model path: 0 flags.
+- **Model Work's matched-FPR numbers on the v6.1 tests** (`test_generated` recall at 0.5 / 1 / 2% benign FPR):
+  release-01 77.2 / 83.7 / 88.2%, release-05 **91.1 / 95.0 / 97.2%**. On `test_transfer` at 0.5 / 1%:
+  22.0 / 25.3% against **50.7 / 56.0%**.
+- **Weak spots:** a few terminal-note templates (TERM_NOTE:027 is 4 of 25 rows on v6.1 test_generated) and one
+  request template on val (REQUEST:023, 6 of 18). `test_transfer`'s AUC is a little lower than release-01's
+  (0.941 against 0.952), though at its threshold it catches more for 0.7 points more false positives.
+- **Cost:** 54.3 ms per 512-token window on the 780M.
+
+**Installed:** `models/injection/scribe-guard` is release-05; release-01 is kept as `scribe-guard-r01`.
+
+**Next:** short, direct attacks are still the gap (deepset English 39.5%, Gandalf 88.4%), and German is not
+covered (the model is English only, by the user's choice).
