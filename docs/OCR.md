@@ -303,3 +303,24 @@ On the same 500 seed-100 lines as the table above, rendered on Desktop 2, throug
     the device. Always-on dispatches these streams continuously. The check reads the stored streams only, not
     anything patched in at dispatch.
 - Lines are synthetic, so these are not real-world figures.
+
+## Always-on as shipped, live (NPU recognizer, line cache)
+
+`tools/always_on_live.py --npu --canvas --seconds 180`, Desktop 2, 2026-10-19, run through `research-lowlevel.sh
+--npu` on a clear host. The canvas is the topmost synthetic GDI window, about 700 kpx of text that changes
+continuously, which makes it a worst case. Numbers only.
+
+| | CPU recognizer (earlier run) | as shipped |
+|---|---:|---:|
+| reads per minute | 24.7 | 27.0 |
+| detect ms per read (CPU) | 80 | 61.9 |
+| recognize ms per read | 326 | 114.0 |
+| lines reused from the cache | none | 1544 of 1983 (78%) |
+| share of each minute busy | 17% | 8.3% |
+| MCP server process CPU | 2.0% of a core | 1.3% of a core |
+| vision worker CPU, startup included | not measured | 25.6% of a core (1.6% of 16 threads) |
+
+- Errors: 0. The backend was `npu` for the whole run, and the NPU was idle after the stop.
+- The text detector still runs on the CPU, and at 4 threads it is most of the worker's CPU time.
+- This is the canvas at the maximum read rate (one read per window per 2 s). A desktop with less changing text
+  costs proportionally less, and an unchanged screen costs nothing, since reads follow dirty regions.
