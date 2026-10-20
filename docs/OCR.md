@@ -120,8 +120,7 @@ The other route is an engine-native recognizer, trained with quantization in the
 - ~~Width buckets for fixed-width NPU builds~~: done, four buckets (320 / 640 / 960 / 1280).
 - **The detector stays on the CPU** (about 62 ms per always-on read). It is a DBNet with ConvTranspose, Resize and
   ten squeeze-excite blocks, none of which the engine runs; not surveyed further.
-- **ScribeRec's accuracy on real screens is not measured.** The one real-window check above (a terminal against its
-  UI Automation text) predates it and used PP-OCRv5. Every ScribeRec number here is on synthetic lines.
+- **ScribeRec on real screens is worse than PP-OCRv5** (below): it was trained on synthetic UI text only.
 - **Installed copies cannot get the model yet:** release-01 and its containers live in git-ignored folders here.
 
 ## The route chosen: an engine-native recognizer (2026-10-19)
@@ -328,3 +327,37 @@ continuously, which makes it a worst case. Numbers only.
 - The text detector still runs on the CPU, and at 4 threads it is most of the worker's CPU time.
 - This is the canvas at the maximum read rate (one read per window per 2 s). A desktop with less changing text
   costs proportionally less, and an unchanged screen costs nothing, since reads follow dirty regions.
+
+## ScribeRec on a real window (2026-10-19, Desktop 2)
+
+`tools/ocr_vs_uia.py`: a Windows Terminal (Cascadia Mono, dark theme), whose UI Automation Text pattern is ground
+truth for its pixels. Numbers only; no text was printed or kept. The three arms ran back to back in one sitting,
+twice, through `research-lowlevel.sh --npu`: clear host, timing-eligible, the NPU idle afterwards.
+Log: `results/ocr_vs_uia_scriberec_232953.log`.
+
+| recognizer | CER vs UIA | exact lines | recognize ms |
+|---|---:|---:|---:|
+| PP-OCRv5 (CPU) | **0.0095 / 0.0097** | 67.8% / 60.4% | 284 / 47 |
+| ScribeRec release-01 (CPU) | 0.044 / 0.030 | 46.6% / 41.5% | 545 / 116 |
+| ScribeRec release-01 (NPU) | (0.675) / 0.030 | (9.1%) / 41.5% | (1539) / 50 |
+
+- **On the NPU it is exact:** in round 2 its output equals the CPU's.
+- **Round 1's NPU arm is not counted:** the terminal changed between its two reads (UIA lines 45 -> 39). It also
+  included the first NPU open.
+- **On real text, ScribeRec makes 3-4.5x the errors of PP-OCRv5,** although it made 2.7x fewer on synthetic lines.
+
+**The breakdown,** from two more CPU runs of each (numbers only). The terminal was live, so a third pair was
+contaminated (CER 0.67, with the line counts drifting) and is not counted.
+- **Spacing:** ignoring spaces changes neither recognizer's CER, so spacing is not the cause.
+- **Plain-ASCII lines:** ScribeRec 0.026, PP-OCRv5 0.006.
+- **Non-ASCII output:** ScribeRec emits it in 20 lines where PP-OCRv5 has 4-8. This fits its Greek-twin habit
+  and other lookalikes the twin map does not cover.
+- **Likely cause: the training renders.** Cascadia Mono, Windows Terminal's font, is not among the training faces
+  (Segoe UI, Tahoma, Arial, Calibri, Consolas, Verdana), and neither are terminal colour schemes.
+
+**What follows.**
+- PP-OCRv5's recognizer is the more accurate one on real screens today.
+- Always-on OCR still needs ScribeRec, since it runs on the NPU only.
+- The next step is a fine-tune (release-02) with Cascadia Mono and other terminal and editor faces, dark
+  themes, and a character set limited to what screens show.
+- Then a static, known-text window, so errors can be inspected and not only counted.

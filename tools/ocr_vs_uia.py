@@ -8,6 +8,11 @@ character error rate of the OCR text against it: per OCR line, the edit distance
 any UIA line, over the OCR line's length. Whitespace runs are collapsed on both sides. That measures whether what OCR read is right, not whether it read
 everything. It prints no text, saves no pixels and writes nothing. The window may change between the two reads, which only makes the number
 worse. Run from the repo .venv: ``python tools/ocr_vs_uia.py --match WindowsTerminal``.
+
+``--recognizer ppocr`` reads lines with PP-OCRv5's recognizer, and ``scriberec`` (the default) with ScribeRec.
+``--backend npu`` runs ScribeRec's NPU buckets, so it is an NPU sitting: run it through ignite-xdna's
+``research-lowlevel.sh --npu``. The output names the recognizer and the backend the worker reports, and an NPU run
+that did not use the NPU is refused rather than reported.
 """
 import argparse
 import json
@@ -34,8 +39,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--match", required=True)
     ap.add_argument("--backend", default="cpu", help="IGNITE_SCRIBE_VISION_BACKEND for the worker (default cpu)")
+    ap.add_argument("--recognizer", choices=["scriberec", "ppocr"], default="scriberec")
     a = ap.parse_args()
-    env = dict(os.environ, IGNITE_SCRIBE_VISION_BACKEND=a.backend, IGNITE_SCRIBE_WATCH="0")
+    env = dict(os.environ, IGNITE_SCRIBE_VISION_BACKEND=a.backend, IGNITE_SCRIBE_WATCH="0",
+               IGNITE_SCRIBE_ALWAYS_ON="0", IGNITE_SCRIBE_TRAY="0", IGNITE_SCRIBE_SECURE="0")
+    if a.recognizer == "ppocr":                          # no ScribeRec model: the worker uses PP-OCRv5's recognizer
+        env["IGNITE_SCRIBE_OCR_REC_MODEL"] = str(ROOT / "models" / "no-scriberec")
     p = subprocess.Popen([sys.executable, "-m", "ignite_scribe", "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, text=True, encoding="utf-8", env=env)
 
@@ -57,6 +66,10 @@ def main():
     p.stdin.close()
     p.wait(timeout=30)
     w_ocr = ocr["windows"][0]
+    rep = ocr["ocr"]["windows"][0]
+    backend = rep.get("ocr_backend")
+    if a.backend == "npu" and backend != "npu":
+        raise SystemExit(f"refused: asked for the NPU, but the recognizer ran on {backend!r}")
     w_uia = next(w for w in uia["windows"] if w["hwnd"] == w_ocr["hwnd"])
     def norm(s):
         return " ".join(s.split())                  # OCR cannot know how many spaces a gap held
@@ -64,12 +77,26 @@ def main():
     truth = [norm(l) for b in w_uia["text"] if b["source"] == "uia" for l in b["text"].split("\n") if l.strip()]
     read = [norm(b["text"]) for b in w_ocr["text"] if b["source"] == "ocr"]
     errs = chars = exact = 0
+    diag = dict(ascii=[0, 0], non_ascii=[0, 0], no_spaces=[0, 0])   # [errors, characters], numbers only
     for r in read:
         e = min((sub_cer(r, t) for t in truth), default=len(r))
         errs, chars, exact = errs + e, chars + max(len(r), 1), exact + (e == 0)
-    print(json.dumps(dict(window=w_ocr["process"], uia_lines=len(truth), ocr_lines=len(read),
+        k = "ascii" if r.isascii() else "non_ascii"
+        diag[k][0] += e
+        diag[k][1] += max(len(r), 1)
+        r0 = r.replace(" ", "")                      # how much of the error is only spacing
+        e0 = min((sub_cer(r0, t.replace(" ", "")) for t in truth), default=len(r0))
+        diag["no_spaces"][0] += e0
+        diag["no_spaces"][1] += max(len(r0), 1)
+    n_non_ascii = sum(1 for r in read if not r.isascii())
+    print(json.dumps(dict(window=w_ocr["process"], recognizer=a.recognizer, rec_backend=backend,
+                          uia_lines=len(truth), ocr_lines=len(read),
                           cer_vs_uia=round(errs / max(chars, 1), 4), lines_exact=round(exact / max(len(read), 1), 3),
-                          ocr_ms=ocr["ocr"]["windows"][0]["total_ms"])))
+                          ocr_ms=rep["total_ms"], det_ms=rep.get("det_ms"), rec_ms=rep.get("rec_ms"),
+                          cer_ascii_lines=round(diag["ascii"][0] / max(diag["ascii"][1], 1), 4),
+                          cer_non_ascii_lines=round(diag["non_ascii"][0] / max(diag["non_ascii"][1], 1), 4),
+                          non_ascii_lines=n_non_ascii,
+                          cer_ignoring_spaces=round(diag["no_spaces"][0] / max(diag["no_spaces"][1], 1), 4))))
 
 
 if __name__ == "__main__":
