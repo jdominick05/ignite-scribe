@@ -1,6 +1,8 @@
 # Copyright (C) 2026 The ignite-scribe contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The configurator and the background service, on temporary paths. The real registry and policy are untouched."""
+import hashlib
+import io
 import json
 import threading
 import time
@@ -8,6 +10,7 @@ import time
 import pytest
 
 from ignite_scribe import configure as C
+from ignite_scribe import models as M
 from ignite_scribe import redact
 from ignite_scribe import service as S
 
@@ -85,3 +88,58 @@ def test_daemon_runs_until_asked_to_stop(tmp_path, monkeypatch):
         assert '"event": "started"' in log and "stopped" in log
     finally:
         sys.stderr = err
+
+
+class _Resp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+
+def _pinned(monkeypatch, files):
+    """Pin fake files (name -> bytes) in place of the real model's."""
+    monkeypatch.setattr(M, "SECURE_FILES", {f"scribe-guard/{n}": (hashlib.sha256(b).hexdigest(), len(b))
+                                            for n, b in files.items()})
+
+
+def test_model_download_checks_every_file_and_leaves_nothing_on_a_mismatch(tmp_path, monkeypatch):
+    files = {"config.json": b'{"threshold": 0.9}', "tokenizer.json": b"{}", "model_fp16.onnx": b"\x08" * 3000}
+    _pinned(monkeypatch, files)
+    seen = []
+
+    def good(u):
+        seen.append(u)
+        return _Resp(files[u.rsplit("/", 1)[1]])
+    d = M.install_secure_model(tmp_path / "m", opener=good)
+    assert sorted(p.name for p in d.iterdir()) == sorted(files)
+    assert all(f"/resolve/{M.REVISION}/scribe-guard/" in u and u.startswith("https://huggingface.co/") for u in seen)
+    M.install_secure_model(d, opener=lambda u: pytest.fail("a checked file is downloaded again"))
+
+    bad = tmp_path / "bad"
+    with pytest.raises(ValueError):
+        M.install_secure_model(bad, opener=lambda u: _Resp(files[u.rsplit("/", 1)[1]].replace(b"0.9", b"0.1")))
+    assert list(bad.iterdir()) == []                           # no file, and no .part left behind
+    with pytest.raises(ValueError):                            # longer than pinned: stopped before it is all read
+        M.install_secure_model(bad, opener=lambda u: _Resp(files[u.rsplit("/", 1)[1]] + b"x" * 10))
+    assert list(bad.iterdir()) == []
+
+
+def test_setup_installs_the_secure_model_when_secure_mode_is_chosen(tmp_path, no_registry, monkeypatch, capsys):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.delenv("IGNITE_SCRIBE_SECURE_MODEL", raising=False)
+    from ignite_scribe import secure
+    monkeypatch.setattr(secure, "ROOT", tmp_path / "no-checkout")
+    monkeypatch.setattr(M, "install_embed_deps", lambda: pytest.fail("pip is not run when the packages exist"))
+    files = {"config.json": b"{}", "tokenizer.json": b"{}", "model_fp16.onnx": b"onnx"}
+    _pinned(monkeypatch, files)
+    assert not C.capabilities()["secure_mode"]
+    fetch = lambda progress: M.install_secure_model(opener=lambda u: _Resp(files[u.rsplit("/", 1)[1]]),
+                                                    progress=progress)
+    pol = tmp_path / "policy.json"
+    assert C.run(history=False, always_on=False, service=False, secure_mode=True, yes=True, policy_file=pol,
+                 fetch=fetch) == 0
+    assert secure.model_dir() == M.user_secure_dir() and secure.available() == (True, "")
+    out = capsys.readouterr().out
+    assert "secure-mode model    installed" in out and "waits until" not in out

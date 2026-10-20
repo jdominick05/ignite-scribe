@@ -77,12 +77,13 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
     it meets 5 of 7 pre-registered targets. Short, direct attacks (deepset, Gandalf) are the gap
     ([INJECTION.md](INJECTION.md)).
   - Scoring is incremental, at 75.6 ms per batch live.
-  - A download for installed copies is next.
+  - `ignite-scribe setup` downloads it for installed copies (Hugging Face, pinned to a commit, sha256-checked).
 - **ScribeRec on busy terminal UIs:** release-03 beats PP-OCRv5 on a static terminal, but on a live TUI full of
   box-drawing rules and spinner glyphs it still makes about 3x PP-OCRv5's errors ([OCR.md](OCR.md)). Next: rule
   and box rows as neighbours in the generator.
-- **A model download for installed copies:** ScribeRec, the detector and secure mode's model live only in local
-  folders today.
+- **A model download for installed copies:** secure mode's model downloads from Hugging Face. ScribeRec and the
+  detector still live only in local folders: ScribeRec waits on its training fonts' licences, and the detector
+  is OmniParser's (AGPL).
 
 ## 📋 Planned (in the design)
 

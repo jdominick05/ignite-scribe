@@ -158,6 +158,11 @@ redacted text.
   refresh. Scores are kept by a digest of the text, not the text.
 - Withheld windows are never scored.
 - The model is looked up in `IGNITE_SCRIBE_SECURE_MODEL`, then `%LOCALAPPDATA%\ignite-scribe\models\injection\scribe-guard`.
+- `ignite-scribe setup` installs it there when secure mode is chosen (`models.py`). It fetches `config.json`,
+  `tokenizer.json` and `model_fp16.onnx` (64 MB) from `huggingface.co/jdominick05/ignite-scribe` at a pinned
+  commit. Each file must match the size and sha256 pinned in the code before it is renamed into place, so a
+  failed or altered download leaves nothing that secure mode would load. When numpy, tokenizers or
+  onnxruntime is missing, it pip-installs them (the `embed` extra) first.
 
 **Always-on OCR (opt-in, NPU only).** `IGNITE_SCRIBE_ALWAYS_ON=1` or
 `"always_on_ocr": true` in the policy. One server per machine reads, as their pixels change, the text of windows UI

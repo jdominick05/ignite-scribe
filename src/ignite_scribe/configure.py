@@ -20,6 +20,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from . import models
 from .redact import default_policy_path
 
 
@@ -92,9 +93,29 @@ def capabilities() -> dict:
                 semantic_history=ok_sem, semantic_why=why_sem or None, secure_mode=ok_sec, secure_why=why_sec or None)
 
 
+def install_secure(fetch=None) -> tuple[bool, str]:
+    """Install secure mode's packages (when missing) and its model, then re-check. -> (available, why not)."""
+    import importlib.util
+    from . import secure
+    if any(importlib.util.find_spec(m) is None for m in ("numpy", "onnxruntime", "tokenizers")):
+        print("  installing onnxruntime-directml, tokenizers and numpy ...")
+        if models.install_embed_deps() != 0:
+            return False, "pip failed (see above)"
+        importlib.invalidate_caches()
+
+    def progress(path, got, size):
+        if got == size or got % (16 << 20) < (1 << 20):
+            print(f"\r  downloading {path}: {got * 100 // size}%", end="" if got < size else "\n", flush=True)
+    try:
+        (fetch or models.install_secure_model)(progress=progress)
+    except Exception as e:  # noqa: BLE001
+        return False, f"{type(e).__name__}: {e}"
+    return secure.available()
+
+
 def run(history: bool | None = None, always_on: bool | None = None, service: bool | None = None,
         mcp_config: str | None = None, yes: bool = False, policy_file: Path | None = None,
-        secure_mode: bool | None = None) -> int:
+        secure_mode: bool | None = None, fetch=None) -> int:
     from . import service as svc
     path = policy_file or default_policy_path()
     pol = read_policy(path)
@@ -117,6 +138,12 @@ def run(history: bool | None = None, always_on: bool | None = None, service: boo
         cur = bool(pol.get("secure_mode", False))
         secure_mode = (_ask("Secure mode: also check screen text for prompt injection with a classifier on the iGPU?",
                             cur) if interactive else cur)
+    if secure_mode and not cap["secure_mode"]:
+        get = (_ask(f"Secure mode needs its model ({models.SECURE_MB} MB from huggingface.co/{models.REPO}, checked "
+                    "by sha256) and onnxruntime-directml. Install them now?", True) if interactive else yes)
+        if get:
+            cap["secure_mode"], why = install_secure(fetch)
+            print(f"  secure-mode model    {'installed' if cap['secure_mode'] else 'not installed: ' + why}")
     if service is None:
         want = history or svc.installed() is not None
         service = _ask("Run ignite-scribe in the background at logon (tray icon; records history without an agent)?",

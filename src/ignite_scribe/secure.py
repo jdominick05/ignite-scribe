@@ -47,7 +47,9 @@ def available() -> tuple[bool, str]:
     """From files and imports only: nothing is started."""
     import importlib.util
     d = model_dir()
-    missing = [f for f in ("model.onnx", "tokenizer.json", "config.json") if not (d / f).is_file()]
+    missing = [f for f in ("tokenizer.json", "config.json") if not (d / f).is_file()]
+    if not (d / "model_fp16.onnx").is_file() and not (d / "model.onnx").is_file():   # DirectML loads the fp16 one
+        missing.append("model_fp16.onnx")
     if missing:
         return False, f"the secure-mode model is not installed (missing {', '.join(missing)} in {d})"
     for mod in ("numpy", "onnxruntime", "tokenizers"):
