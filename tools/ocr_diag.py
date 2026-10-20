@@ -10,6 +10,9 @@ is counted as unmatched, not scored. Lines are
 detected once (PP-OCRv5's detector) and read by three recognizers on the same crops:
 - ``scriberec``: ScribeRec as shipped;
 - ``scriberec_ascii``: ScribeRec with every class outside printable ASCII masked before the argmax;
+- ``scriberec_nomap``: ScribeRec without its lookalike map (``latin_twins=False``);
+- with ``--candidate DIR``: ``candidate`` and ``candidate_nomap``, another ScribeRec model on the same crops (the
+  acceptance gate for a new release: same captures, so the comparison is paired);
 - ``ppocr``: PP-OCRv5's recognizer.
 
 Printed, aggregated over all samples (no text, no crops):
@@ -140,6 +143,9 @@ def main():
     ap.add_argument("--match", default="WindowsTerminal")
     ap.add_argument("--samples", type=int, default=3, help="stable samples per window")
     ap.add_argument("--venv", default=str(ROOT / ".venv" / "Scripts" / "python.exe"))
+    ap.add_argument("--candidate", help="another ScribeRec model directory, read on the same crops")
+    ap.add_argument("--subs-of", default="scriberec",
+                    help="whose substitutions, crop heights and space errors to report")
     a = ap.parse_args()
     from ignite_scribe import capture, windows
     from ignite_scribe.ocr_pipeline import OcrPipeline
@@ -151,6 +157,10 @@ def main():
     pp = OcrPipeline(cfg["ocr_det"], cfg["ocr_rec"], cfg["ocr_dict"], cache_size=0)
     sr = ScribeRec(cfg["ocr_rec_model"], cfg["ocr_dict"])
     sr_ascii = ScribeRec(cfg["ocr_rec_model"], cfg["ocr_dict"], charset=string.printable)
+    extra = dict(scriberec_nomap=ScribeRec(cfg["ocr_rec_model"], cfg["ocr_dict"], latin_twins=False))
+    if a.candidate:
+        extra["candidate"] = ScribeRec(a.candidate, cfg["ocr_dict"])
+        extra["candidate_nomap"] = ScribeRec(a.candidate, cfg["ocr_dict"], latin_twins=False)
     policy = Policy()
 
     env = dict(os.environ, IGNITE_SCRIBE_WATCH="0", IGNITE_SCRIBE_VISION="0", IGNITE_SCRIBE_TRAY="0",
@@ -170,7 +180,7 @@ def main():
         return {w["hwnd"]: [norm_runs(l) for b in w["text"] if b["source"] == "uia" for l in b["text"].split("\n")
                             if l.strip()] for w in d["windows"]}
 
-    stats = {k: [0, 0] for k in ("scriberec", "scriberec_ascii", "ppocr")}
+    stats = {k: [0, 0] for k in ("scriberec", "scriberec_ascii", "ppocr", *extra)}
     by_h = collections.defaultdict(lambda: [0, 0])
     subs = collections.Counter()
     pads, n_lines, skipped, used, dpis = [], 0, 0, 0, set()
@@ -201,7 +211,8 @@ def main():
             lines = pp(rgb)
             crops = [rgb[l.box[1]:l.box[3], l.box[0]:l.box[2]] for l in lines]
             reads = dict(ppocr=[l.text for l in lines], scriberec=[t for t, _ in sr.read_many(crops)],
-                         scriberec_ascii=[t for t, _ in sr_ascii.read_many(crops)])
+                         scriberec_ascii=[t for t, _ in sr_ascii.read_many(crops)],
+                         **{k: [t for t, _ in r.read_many(crops)] for k, r in extra.items()})
             for k, texts in reads.items():
                 for crop, t in zip(crops, texts):
                     t = norm(t)
@@ -213,7 +224,7 @@ def main():
                         continue
                     stats[k][0] += best[0]
                     stats[k][1] += len(t)
-                    if k == "scriberec":
+                    if k == a.subs_of:
                         h = crop.shape[0]
                         bin_ = f"{h // 4 * 4}-{h // 4 * 4 + 3}px"
                         by_h[bin_][0] += best[0]
@@ -234,16 +245,18 @@ def main():
         windows=len(targets), stable_samples=used, skipped_unstable=skipped, lines=n_lines,
         unmatched_lines=dict(unmatched),
         cer={k: round(e / max(c, 1), 4) for k, (e, c) in stats.items()},
-        scriberec_cer_by_crop_height={k: dict(cer=round(e / max(c, 1), 4), chars=c) for k, (e, c) in sorted(by_h.items())},
-        ink_padding_px=dict(top_median=top[len(top) // 2] if top else None, bottom_median=bot[len(bot) // 2] if bot else None,
+        scriberec_cer_by_crop_height={k: dict(cer=round(e / max(c, 1), 4), chars=c)
+                                      for k, (e, c) in sorted(by_h.items())},
+        ink_padding_px=dict(top_median=top[len(top) // 2] if top else None,
+                            bottom_median=bot[len(bot) // 2] if bot else None,
                             top_zero_share=round(sum(1 for x in top if x == 0) / max(len(top), 1), 3),
                             bottom_zero_share=round(sum(1 for x in bot if x == 0) / max(len(bot), 1), 3)),
         scriberec_space_errors=dict(space_err), scorer="whitespace runs collapsed to one space on both sides",
         scriberec_top_substitutions=[dict(ref=r, read=h, n=n) for (r, h), n in subs.most_common(20)],
         dpi=sorted(dpis), terminal=terminal_settings(),
         crop_source="PP-OCRv5 DBNet boxes from ink (unclip 1.5), rows merged; not UIA ranges"), ensure_ascii=False))
-    sr.close()
-    sr_ascii.close()
+    for r in (sr, sr_ascii, *extra.values()):
+        r.close()
 
 
 if __name__ == "__main__":
