@@ -576,7 +576,7 @@ def main():
         while len(rows) < n and tries < n * 20:
             tries += 1
             e = finish(example(r, split))
-            h = hashlib.blake2b(e["text"].encode(), digest_size=8).digest()
+            h = hashlib.blake2b(" ".join(e["text"].split()).encode(), digest_size=8).digest()   # spacing-insensitive
             if not e["text"] or h in seen or not keep(e):
                 continue
             seen.add(h)
@@ -606,10 +606,10 @@ def main():
                     transfer.append(e)
     splits["test_transfer"] = transfer
 
-    train_hashes = {hashlib.blake2b(e["text"].encode(), digest_size=8).digest() for e in splits["train"]}
+    train_hashes = {hashlib.blake2b(" ".join(e["text"].split()).encode(), digest_size=8).digest() for e in splits["train"]}
     leaks = {}
     for k in [k for k in splits if k != "train"]:                   # a row seen in training is dropped
-        keep = [e for e in splits[k] if hashlib.blake2b(e["text"].encode(), digest_size=8).digest() not in train_hashes]
+        keep = [e for e in splits[k] if hashlib.blake2b(" ".join(e["text"].split()).encode(), digest_size=8).digest() not in train_hashes]
         leaks[k] = len(splits[k]) - len(keep)
         splits[k] = keep
     train_sh = set()
@@ -625,7 +625,7 @@ def main():
     def med(v, lab):
         m = sorted(len(e["text"]) for e in v if e["label"] == lab)
         return m[len(m) // 2] if m else None
-    manifest = dict(version="v3", seed=a.seed, n=a.n, eval_near_duplicates_dropped=dedup.dropped, german_train_rows_excluded=german,
+    manifest = dict(version="v3.1", seed=a.seed, n=a.n, eval_near_duplicates_dropped=dedup.dropped, german_train_rows_excluded=german,
                     attack_pool={s: len(v) for s, v in attacks.items()}, prompt_pool={s: len(v) for s, v in prompts.items()},
                     bipia_train_emails={s: len(v) for s, v in mails.items()},
                     files={s: dict(code=len(code[s]), docs=len(docs[s])) for s in SPLITS},
