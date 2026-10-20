@@ -64,7 +64,9 @@ not thereby safe.
 | synthetic UI lines (seed 100) | n/a | 0 of 500 |
 | this desktop, 60 s of the watcher's state | n/a | 0 flagged windows |
 
-A classifier tier, in the vision worker and later on the NPU, is next. The patterns were tuned on the train splits
+An off-the-shelf classifier was measured and rejected: it flags 62% of ordinary emails and 12% of UI lines
+([docs/INJECTION.md](docs/INJECTION.md)). A classifier trained on screen text, for the NPU, is next. The patterns
+were tuned on the train splits
 only.
 
 **Waiting instead of polling.** `wait_for` blocks until text appears (`text`), goes (`gone`), or anything

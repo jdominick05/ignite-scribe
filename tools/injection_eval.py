@@ -11,6 +11,10 @@ Sets, fetched once into git-ignored ``calib/injection_eval/`` (licences checked 
   end), which measures recall.
 - ``seed100``: this repo's 500 synthetic UI lines (``calib/gdi_eval``), if built. False positives only.
 Precision is not reported on sets with only attacks or only benign text.
+
+``--model DIR`` adds the classifier tier (``injection_model``; e.g. protectai/deberta-v3-base-prompt-injection-v2,
+Apache-2.0, in git-ignored ``models/injection/``): each set is scored by the patterns, by the classifier at
+``--threshold``, and by either. Also its ms per text on the CPU.
 """
 import argparse
 import json
@@ -50,9 +54,9 @@ def hf_rows(dataset: str, split: str) -> list[dict]:
             return rows
 
 
-def score(pos: list[str], neg: list[str]) -> dict:
-    tp = sum(1 for t in pos if scan(t))
-    fp = sum(1 for t in neg if scan(t))
+def score(pos: list[str], neg: list[str], flagged=None) -> dict:
+    flagged = flagged or (lambda texts: [bool(scan(t)) for t in texts])
+    tp, fp = sum(flagged(pos)), sum(flagged(neg))
     out = dict(attacks=len(pos), benign=len(neg))
     if pos:
         out["recall"] = round(tp / len(pos), 3)
@@ -65,12 +69,19 @@ def score(pos: list[str], neg: list[str]) -> dict:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.parse_args()
+    ap.add_argument("--model", help="a classifier directory (model.onnx, tokenizer.json, config.json)")
+    ap.add_argument("--threshold", type=float, default=0.5)
+    a = ap.parse_args()
+    clf = None
+    if a.model:
+        from ignite_scribe.injection_model import InjectionClassifier
+        clf = InjectionClassifier(a.model)
+    sets = {}
     res = {}
     d = hf_rows("deepset/prompt-injections", "test")
-    res["deepset"] = score([r["text"] for r in d if r["label"] == 1], [r["text"] for r in d if r["label"] == 0])
+    sets["deepset"] = ([r["text"] for r in d if r["label"] == 1], [r["text"] for r in d if r["label"] == 0])
     g = hf_rows("Lakera/gandalf_ignore_instructions", "test")
-    res["gandalf"] = score([r.get("text") or next(v for v in r.values() if isinstance(v, str)) for r in g], [])
+    sets["gandalf"] = ([r.get("text") or next(v for v in r.values() if isinstance(v, str)) for r in g], [])
     emails = [json.loads(l)["context"] for l in fetch("bipia_email_test.jsonl", BIPIA + "email/test.jsonl")
               .decode("utf-8").splitlines() if l.strip()]
     attacks = []
@@ -79,16 +90,26 @@ def main():
             attacks += v
     rng = random.Random(7)
     planted = []
-    for a in attacks:
+    for atk in attacks:
         e = rng.choice(emails)
         mid = len(e) // 2
-        planted += [e[:mid] + "\n" + a + "\n" + e[mid:], e + "\n\n" + a]
-    res["bipia-email"] = score(planted, emails)
-    res["bipia-email"]["attack_instructions"] = len(attacks)
+        planted += [e[:mid] + "\n" + atk + "\n" + e[mid:], e + "\n\n" + atk]
+    sets["bipia-email"] = (planted, emails)
     labels = ROOT / "calib" / "gdi_eval" / "labels.tsv"
     if labels.is_file():
-        res["seed100"] = score([], [l.split("\t", 1)[1] for l in labels.read_text(encoding="utf-8").splitlines()
-                                    if "\t" in l])
+        sets["seed100"] = ([], [l.split("\t", 1)[1] for l in labels.read_text(encoding="utf-8").splitlines()
+                                if "\t" in l])
+    for name, (pos, neg) in sets.items():
+        if clf is None:
+            res[name] = score(pos, neg)
+            continue
+        probs = dict(zip(pos + neg, clf.score(pos + neg)))
+        model = lambda texts: [probs[t] >= a.threshold for t in texts]          # noqa: E731
+        either = lambda texts: [probs[t] >= a.threshold or bool(scan(t)) for t in texts]   # noqa: E731
+        res[name] = dict(patterns=score(pos, neg), classifier=score(pos, neg, model), either=score(pos, neg, either))
+    if clf is not None:
+        res["classifier_ms_per_window"] = round(clf.ms_total / max(clf.windows_total, 1), 1)
+        res["threshold"] = a.threshold
     print(json.dumps(res))
 
 
