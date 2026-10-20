@@ -67,6 +67,7 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 | Tray icon: shows when the screen is being read | 0.1.0 | Watching, reading pixels, paused or idle; pause from the menu |
 | Tray polish and live settings | after 0.1.0 | Icons with shapes (no colour key needed), every setting in the menu, applied live; the background service owns the icon |
 | One-line installer, `ignite-scribe setup`, background service | 0.1.0 | No admin rights, no Git; a per-user logon entry |
+| `find_element`: the element map for clicking (idea 1) | after 0.1.0 | Name, role and window search; a click point no other window covers; enabled, shortcut keys, AutomationId, actions; checked end to end with `WindowFromPoint` |
 
 ## 🔨 In progress
 
@@ -98,7 +99,7 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 
 | # | Idea | What it gives |
 |---|---|---|
-| 1 | **Element map for clicking**: `find_element("Save button in Notepad")` -> rectangle, centre, enabled, shortcut | A click tool (e.g. Hermes's) hits exact coordinates instead of guessing from screenshots; `wait_for` then confirms. The strongest pick. |
+| 1 | ✅ **Element map for clicking**: `find_element("Save button in Notepad")` -> rectangle, centre, enabled, shortcut | Shipped as `find_element(name, role, match)`, see above. A click tool (e.g. Hermes's) hits exact coordinates instead of guessing from screenshots; `wait_for` then confirms. |
 | 2 | **`get_selection`**: the text the user highlighted (UI Automation Text pattern) | "Explain this" or "fix this" without copy-paste |
 | 3 | **Tables**: data grids as rows and columns (Excel, file lists, admin consoles, web tables) | Spreadsheets and dashboards become queryable |
 | 4 | **App adapters**: terminal (folder, last command, exit status), IDE (file, line, Problems panel), browser (URL, tabs), mail and chat (sender, subject, messages) | Fields instead of raw text |

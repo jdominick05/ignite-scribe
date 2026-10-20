@@ -40,6 +40,7 @@ class TextBlock:
     rect: Rect | None = None
     source: str = "uia"          # "uia" (UI Automation) or "ocr"
     role: str | None = None      # e.g. "Button", "Edit", "Document" (UIA control type)
+    detail: dict | None = None   # find_element only (uia.walk(detail=True)): name, enabled, keys, actions...
 
 
 @dataclass
@@ -84,6 +85,10 @@ class Snapshot:
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        for w in d["windows"]:
+            for b in w["text"]:
+                if b.get("detail") is None:      # only find_element's walk has detail: snapshots stay as they were
+                    b.pop("detail", None)
         d["note"] = UNTRUSTED
         return d
 

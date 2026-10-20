@@ -20,6 +20,12 @@ Lines are right-stripped and blank runs collapsed, then capped at ``MAX_TEXT``. 
 element's name or value is dropped. An element whose Text pattern gave multi-line text is not descended into:
 its children (a document's links, a terminal's parts) would repeat that text.
 
+**Detail** (``walk(detail=True)``, for ``find_element`` only): a second cache request adds whether each element is
+enabled, its shortcut keys, AutomationId, keyboard focus and which actions it supports (invoke, toggle, select,
+expand), all in the same cached call; a clickable control with no name is kept too. A password element gets none
+of it: its early return comes first. The watcher and snapshots never ask for detail, so their content and events
+are unchanged.
+
 The caller decides which windows to walk; ``collect`` never walks a window the redaction policy excludes.
 """
 from __future__ import annotations
@@ -39,6 +45,10 @@ NAME, CONTROL_TYPE, BOUNDS, IS_OFFSCREEN, IS_PASSWORD = 30005, 30003, 30001, 300
 IS_VALUE_AVAILABLE, VALUE, IS_TEXT_AVAILABLE = 30043, 30045, 30040
 TEXT_PATTERN = 10014
 TREESCOPE_CHILDREN = 2
+# detail only (UIA_*PropertyId in UIAutomationCore's type library)
+IS_ENABLED, ACCELERATOR_KEY, ACCESS_KEY, AUTOMATION_ID, HAS_FOCUS = 30010, 30006, 30007, 30011, 30008
+ACTIONS = {"invoke": 30031, "toggle": 30041, "select": 30036, "expand": 30028}
+DETAIL_PROPS = (IS_ENABLED, ACCELERATOR_KEY, ACCESS_KEY, AUTOMATION_ID, HAS_FOCUS, *ACTIONS.values())
 
 CONTROL_TYPES = {50000 + i: n for i, n in enumerate(
     "Button Calendar CheckBox ComboBox Edit Hyperlink Image ListItem List Menu MenuBar MenuItem ProgressBar "
@@ -47,6 +57,8 @@ CONTROL_TYPES = {50000 + i: n for i, n in enumerate(
     "SemanticZoom AppBar".split())}
 NO_DESCEND = {"ScrollBar", "Thumb", "TitleBar", "Separator"}
 NO_EMIT = {"TitleBar"}     # its name is the window title, already in the snapshot
+CLICKABLE = {"Button", "CheckBox", "ComboBox", "Edit", "Hyperlink", "ListItem", "MenuItem", "RadioButton",
+             "Slider", "Spinner", "SplitButton", "TabItem", "TreeItem", "DataItem", "HeaderItem"}
 MAX_VALUE = 4000          # characters kept from one element's value
 MAX_TEXT = 8000           # characters kept from one element's visible text (after stripping)
 READ_TEXT = 60000         # characters requested from the visible ranges (terminals pad every line with spaces)
@@ -79,10 +91,13 @@ def _init():
         auto = a2
     except Exception:  # noqa: BLE001 - older Windows: default timeouts
         pass
-    cache = auto.CreateCacheRequest()
-    for pid in (NAME, CONTROL_TYPE, BOUNDS, IS_OFFSCREEN, IS_PASSWORD, IS_VALUE_AVAILABLE, IS_TEXT_AVAILABLE):
+    base = (NAME, CONTROL_TYPE, BOUNDS, IS_OFFSCREEN, IS_PASSWORD, IS_VALUE_AVAILABLE, IS_TEXT_AVAILABLE)
+    cache, detail = auto.CreateCacheRequest(), auto.CreateCacheRequest()
+    for pid in base:
         cache.AddProperty(pid)
-    _tls.auto, _tls.cache = auto, cache
+    for pid in base + DETAIL_PROPS:
+        detail.AddProperty(pid)
+    _tls.auto, _tls.cache, _tls.detail = auto, cache, detail
     return auto, cache
 
 
@@ -118,10 +133,21 @@ def _visible_text(el) -> str:
         return ""
 
 
-def _block(el) -> tuple[TextBlock | None, str, bool]:
+def _detail(el, name: str) -> dict:
+    """The cached detail properties of a non-password element (see the module docstring)."""
+    def s(pid):
+        v = el.GetCachedPropertyValue(pid)
+        return v.strip() if isinstance(v, str) and v.strip() else None
+    return dict(name=name or None, enabled=bool(el.GetCachedPropertyValue(IS_ENABLED)),
+                keys=s(ACCELERATOR_KEY) or s(ACCESS_KEY), automation_id=s(AUTOMATION_ID),
+                focused=bool(el.GetCachedPropertyValue(HAS_FOCUS)),
+                actions=[a for a, pid in ACTIONS.items() if el.GetCachedPropertyValue(pid)])
+
+
+def _block(el, detail: bool = False) -> tuple[TextBlock | None, str, bool]:
     """-> (text block or None, role, whether its Text pattern already covered its subtree)."""
     role = CONTROL_TYPES.get(el.CachedControlType, "Unknown")
-    if el.CachedIsPassword:
+    if el.CachedIsPassword:                  # first, before any detail: nothing more is asked of a password field
         return TextBlock("[password field]", _rect(el), "uia", role), role, False
     parts = []
     name = (el.CachedName or "").strip()
@@ -144,15 +170,21 @@ def _block(el) -> tuple[TextBlock | None, str, bool]:
                 parts = [p for p in parts if p not in t]
             parts.append(t)
             covered = multiline
-    if not parts:
+    d = _detail(el, name) if detail else None
+    if not parts and not (d and role in CLICKABLE and d["automation_id"]):   # an icon button: its id names it
         return None, role, False
     sep = "\n" if any("\n" in p for p in parts) else ": "
-    return TextBlock(sep.join(parts), _rect(el), "uia", role), role, covered
+    return TextBlock(sep.join(parts), _rect(el), "uia", role, d), role, covered
 
 
-def walk(hwnd: int, node_cap: int = 600, seconds: float = 1.0) -> tuple[list[TextBlock], list[str]]:
-    """-> (text blocks in tree order, notes such as 'node cap' or 'timeout'). Never raises for app errors."""
+def walk(hwnd: int, node_cap: int = 600, seconds: float = 1.0,
+         detail: bool = False) -> tuple[list[TextBlock], list[str]]:
+    """-> (text blocks in tree order, notes such as 'node cap' or 'timeout'). Never raises for app errors.
+    ``detail``: blocks carry ``TextBlock.detail`` (``find_element``), and they are not deduplicated, since two
+    buttons with one label are two places to click."""
     auto, cache = _init()
+    if detail:
+        cache = _tls.detail
     deadline = time.monotonic() + seconds
     notes: list[str] = []
     try:
@@ -173,7 +205,7 @@ def walk(hwnd: int, node_cap: int = 600, seconds: float = 1.0) -> tuple[list[Tex
         try:
             if el.CachedIsOffscreen and seen > 1:
                 continue
-            b, role, covered = _block(el)
+            b, role, covered = _block(el, detail)
             if b is not None and seen > 1 and role not in NO_EMIT:   # the window itself is its title
                 blocks.append(b)
             if role in NO_DESCEND or el.CachedIsPassword or covered:
@@ -183,7 +215,7 @@ def walk(hwnd: int, node_cap: int = 600, seconds: float = 1.0) -> tuple[list[Tex
         except Exception as e:  # noqa: BLE001 - element vanished, provider hung or refused
             if f"error: {type(e).__name__}" not in notes:
                 notes.append(f"error: {type(e).__name__}")
-    return _dedupe(blocks), notes
+    return (blocks if detail else _dedupe(blocks)), notes
 
 
 def _dedupe(blocks: list[TextBlock]) -> list[TextBlock]:

@@ -47,6 +47,23 @@ went after `since`, so nothing between two calls is missed. An agent that clicks
 computer-use harness) can check the action: note `next_since`, act, then call `wait_for(since=..., quiet_s=0.5)`.
 The reply lists what the action changed, and `timeout` means it changed nothing.
 
+**Where to click.** `find_element(name, role, match)` walks the matched windows fresh (the policy first, so an
+excluded window is never read) and returns controls ranked by name: exact, prefix, a word's prefix, substring,
+then AutomationId and value. The focused window comes first on ties. Each hit has:
+- `rect` and `click`, in physical screen pixels (per-monitor DPI aware). A click tool that is not DPI aware must
+  divide by the display scale;
+- `occluded`, the share of the control that windows above it cover. `click` is a visible point: the centre when
+  that is visible, else the centre of the largest visible piece, else null;
+- `enabled`, `keys` (accelerator or access key, e.g. `Alt+s` from a `&Save` label), `automation_id`, `focused`
+  and `actions` (invoke, toggle, select, expand);
+- its window (hwnd, title, process, z) and whether that window's text is flagged.
+
+A password field is found with its rectangle and role only. Names are screen text, so a page can label anything
+"Save": check the hit's window. Then `wait_for(since=seq, quiet_s=0.5)` confirms what the click did.
+Snapshots, the watcher and history do not carry this detail, so their content and events are unchanged.
+Cost (Desktop 2, 5 calls each): the focused window alone, median 27 ms; four windows, median 842 ms (3 had
+content, 122 controls, 118 of them partly covered by a window above).
+
 What noticing the end of a 20 s build costs (`tools/waitfor_bench.py`, Desktop 2, 3 runs; text tokens estimated as
 bytes/4; screenshot tokens as w*h/750 after scaling to at most 1568 px a side and 1.15 MP, a common vision-model
 rule):

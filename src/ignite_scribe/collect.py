@@ -18,9 +18,11 @@ from .snapshot import Snapshot
 
 
 def collect(policy: Policy, text: bool = True, max_windows: int = 6, node_cap: int = 600,
-            seconds: float = 1.0, budget: float = 3.0) -> Snapshot:
+            seconds: float = 1.0, budget: float = 3.0, match: str | None = None,
+            detail: bool = False) -> Snapshot:
     """The raw (not yet redacted) snapshot. ``text``: walk UI Automation for the focused window first, then the
-    topmost ones, up to ``max_windows`` and ``budget`` seconds in all."""
+    topmost ones, up to ``max_windows`` and ``budget`` seconds in all. ``match``: walk only windows whose title
+    or process contains it (case-insensitive). ``detail``: see ``uia.walk``."""
     snap = windows.snapshot()
     if not text:
         return snap
@@ -36,7 +38,11 @@ def collect(policy: Policy, text: bool = True, max_windows: int = 6, node_cap: i
             break
         if w.minimized or policy.excluded(w):
             continue
-        w.text, w.notes = uia.walk(w.hwnd, node_cap, min(seconds, max(0.05, end - time.monotonic())))
+        if match and match.lower() not in w.title.lower() and match.lower() not in w.process.lower():
+            continue
+        left = min(seconds, max(0.05, end - time.monotonic()))
+        w.text, w.notes = (uia.walk(w.hwnd, node_cap, left, detail=True) if detail else
+                           uia.walk(w.hwnd, node_cap, left))
         if not w.text and not w.notes:   # e.g. an elevated app: UIPI hides its tree from a normal process
             w.notes.append("no readable content (an elevated app, or one that exposes none)")
         walked += 1

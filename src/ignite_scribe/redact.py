@@ -129,7 +129,14 @@ class Policy:
             for b in w.text:
                 t, k = scrub(b.text)
                 secrets += k
-                blocks.append(TextBlock(t, b.rect, b.source, b.role))
+                d = b.detail
+                if d is not None:                      # every string in it came from the screen too
+                    d = dict(d)
+                    for key, v in d.items():
+                        if isinstance(v, str):
+                            d[key], k = scrub(v)
+                            secrets += k
+                blocks.append(replace(b, text=t, detail=d))
             clean = replace(w, title=title, text=blocks)
             clean.flags = injection.flag_window(clean)     # on scrubbed text only: an excerpt holds no secret
             if self.scanner is not None:                   # secure mode: a score arrives on a later refresh
