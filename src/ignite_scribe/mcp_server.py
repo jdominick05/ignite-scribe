@@ -162,6 +162,10 @@ class Server:
         self.always_on_wanted = _always_on.enabled(self.policy)
         self.always = None                           # always_on.AlwaysOn, on the process holding its lock
         self.beacon = self.tray = None               # tray.Beacon / tray.Tray, for a real stdio session
+        from . import secure as _secure
+        self.secure_wanted = _secure.enabled(self.policy)
+        self.secure_error = None
+        self._secure_worker = None
         self._always_lock = None
         self._always_error = None
         self.watcher = watcher
@@ -177,7 +181,38 @@ class Server:
         self.source = source
 
     def _snap(self, text=True, max_windows=6) -> tuple[Snapshot, dict]:
+        self._start_secure()
         return self.policy.apply(self.source(text=text, max_windows=max_windows))
+
+    def _start_secure(self):
+        """Secure mode: attach the classifier's scanner to the policy, on the iGPU only."""
+        from . import secure
+        if not self.secure_wanted or self.policy.scanner is not None or self.secure_error:
+            return
+        ok, why = secure.available()
+        if not ok:
+            self.secure_error = why
+            return
+        try:
+            from . import semantic
+            self._secure_worker = self.embedder or semantic.EmbedWorker()   # one iGPU worker for both
+            self.policy.scanner = secure.Scanner(self._secure_worker, on_scored=self._secure_scored).start()
+        except Exception as e:  # noqa: BLE001 - the patterns keep working
+            self.secure_error = f"{type(e).__name__}: {e}"
+
+    def _secure_scored(self):
+        w = self.watcher
+        if w is not None and hasattr(w, "reapply"):
+            w.reapply()
+
+    def _secure_status(self) -> dict:
+        from . import secure
+        if self.policy.scanner is not None:
+            return self.policy.scanner.status()
+        ok, why = secure.available()
+        return dict(on=False, wanted=self.secure_wanted, available=ok, why=why or None, error=self.secure_error,
+                    note=("starts with the watcher" if self.secure_wanted else
+                          "off (opt-in: \"secure_mode\": true in the policy, or IGNITE_SCRIBE_SECURE=1)"))
 
     def _watcher(self):
         """The running watcher, started on first use; None when watching is off or could not start."""
@@ -187,6 +222,7 @@ class Server:
             if self.watcher is None:
                 try:
                     from .watch import Watcher
+                    self._start_secure()
                     self.watcher = Watcher(self.policy, recorder=self._history()).start()
                 except Exception as e:  # noqa: BLE001 - fall back to fresh walks
                     self.watch, self._watch_error = False, f"{type(e).__name__}: {e}"
@@ -220,7 +256,7 @@ class Server:
         if not ok:
             raise RuntimeError(f"semantic history unavailable: {why}")
         if self.embedder is None:
-            self.embedder = semantic.EmbedWorker()
+            self.embedder = self._secure_worker or semantic.EmbedWorker()   # one iGPU worker for both
         return self.embedder
 
     def _start_indexer(self):
@@ -251,8 +287,10 @@ class Server:
             self.watcher.stop()
         if self.indexer is not None:
             self.indexer.stop()
-        if self.embedder is not None:
-            self.embedder.close()
+        if self.policy.scanner is not None:
+            self.policy.scanner.stop()
+        for wk in {id(x): x for x in (self.embedder, self._secure_worker) if x is not None}.values():
+            wk.close()
         if self.history is not None:
             self.history.close()
 
@@ -322,8 +360,8 @@ class Server:
                       dict(running=False, enabled=self.vision_enabled, available=ok, why=why or None,
                            note="starts on the first find_ui_elements or ocr_windows call, stops after 30 s idle"))
             ok, why = vision_client.ocr_available()
-            vision["ocr"] = dict(available=ok, why=why or None, detector="cpu", recognizer="cpu",
-                                 note="the recognizer moves to the NPU with the engine's bf16 datapath (docs/OCR.md)")
+            vision["ocr"] = dict(available=ok, why=why or None,
+                                 note="ScribeRec runs on the NPU when its containers are built, else the CPU (docs/OCR.md)")
             hist = (self.history.status() if self.history is not None else
                     dict(recording=False, enabled=self.history_on, error=self._history_error,
                          note=("opens with the watcher" if self.history_on else
@@ -339,7 +377,8 @@ class Server:
             return dict(version=__version__,
                         sources=["windows"] + (["uia"] if uia.available() else ["uia unavailable (install [uia])"]),
                         watch=watch, vision=vision, history=hist, always_on=self._always_status(),
-                        planned=["ocr recognizer on the npu", "history embeddings on the npu"],
+                        secure_mode=self._secure_status(),
+                        planned=["secure mode's model (training)"],
                         exclude_processes=self.policy.exclude_processes,
                         exclude_title_patterns=self.policy.exclude_title_patterns)
         if name == "get_screen_state":

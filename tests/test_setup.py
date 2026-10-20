@@ -52,7 +52,7 @@ def test_setup_writes_the_policy_keeping_other_settings(tmp_path, no_registry, c
     pol.write_text(json.dumps({"exclude_processes": ["secret.exe"], "history": False}))
     assert C.run(history=True, always_on=False, service=False, yes=True, policy_file=pol) == 0
     d = json.loads(pol.read_text())
-    assert d == {"exclude_processes": ["secret.exe"], "history": True, "always_on_ocr": False}
+    assert d == {"exclude_processes": ["secret.exe"], "history": True, "always_on_ocr": False, "secure_mode": False}
     out = capsys.readouterr().out
     assert '"mcpServers"' in out and '"ignite-scribe"' in out and no_registry == []
     C.run(yes=True, policy_file=pol)                    # --yes keeps the answers; history on implies the service

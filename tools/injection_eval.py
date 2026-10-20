@@ -26,6 +26,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tools"))
 CACHE = ROOT / "calib" / "injection_eval"
 BIPIA = "https://raw.githubusercontent.com/microsoft/BIPIA/main/benchmark/"
 
@@ -70,16 +71,21 @@ def score(pos: list[str], neg: list[str], flagged=None) -> dict:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", help="a classifier directory (model.onnx, tokenizer.json, config.json)")
-    ap.add_argument("--threshold", type=float, default=0.5)
+    ap.add_argument("--threshold", type=float, help="default: the model's own (config.json), else 0.5")
+    ap.add_argument("--device", choices=["dml", "cpu"], default="dml", help="dml: the iGPU, as secure mode runs")
     a = ap.parse_args()
     clf = None
     if a.model:
         from ignite_scribe.injection_model import InjectionClassifier
-        clf = InjectionClassifier(a.model)
+        clf = InjectionClassifier(a.model, device=a.device)
     sets = {}
     res = {}
     d = hf_rows("deepset/prompt-injections", "test")
     sets["deepset"] = ([r["text"] for r in d if r["label"] == 1], [r["text"] for r in d if r["label"] == 0])
+    from injection_data import is_german                     # pre-registered: English and German reported apart
+    for lang, keep in (("en", lambda t: not is_german(t)), ("de", is_german)):
+        sets[f"deepset-{lang}"] = ([r["text"] for r in d if r["label"] == 1 and keep(r["text"])],
+                                   [r["text"] for r in d if r["label"] == 0 and keep(r["text"])])
     g = hf_rows("Lakera/gandalf_ignore_instructions", "test")
     sets["gandalf"] = ([r.get("text") or next(v for v in r.values() if isinstance(v, str)) for r in g], [])
     emails = [json.loads(l)["context"] for l in fetch("bipia_email_test.jsonl", BIPIA + "email/test.jsonl")
@@ -99,17 +105,24 @@ def main():
     if labels.is_file():
         sets["seed100"] = ([], [l.split("\t", 1)[1] for l in labels.read_text(encoding="utf-8").splitlines()
                                 if "\t" in l])
+    held = ROOT / "calib" / "injection_train"                 # tools/injection_data.py's held-out tests, if built
+    for name in ("test_generated", "test_hardneg", "test_transfer"):
+        f = held / f"{name}.jsonl"
+        if f.is_file():
+            rows = [json.loads(l) for l in f.read_text(encoding="utf-8").splitlines() if l.strip()]
+            sets[name] = ([e["text"] for e in rows if e["label"] == 1], [e["text"] for e in rows if e["label"] == 0])
     for name, (pos, neg) in sets.items():
         if clf is None:
             res[name] = score(pos, neg)
             continue
         probs = dict(zip(pos + neg, clf.score(pos + neg)))
-        model = lambda texts: [probs[t] >= a.threshold for t in texts]          # noqa: E731
-        either = lambda texts: [probs[t] >= a.threshold or bool(scan(t)) for t in texts]   # noqa: E731
+        thr = a.threshold if a.threshold is not None else clf.threshold
+        model = lambda texts: [probs[t] >= thr for t in texts]          # noqa: E731
+        either = lambda texts: [probs[t] >= thr or bool(scan(t)) for t in texts]   # noqa: E731
         res[name] = dict(patterns=score(pos, neg), classifier=score(pos, neg, model), either=score(pos, neg, either))
     if clf is not None:
         res["classifier_ms_per_window"] = round(clf.ms_total / max(clf.windows_total, 1), 1)
-        res["threshold"] = a.threshold
+        res["threshold"], res["device"] = (a.threshold if a.threshold is not None else clf.threshold), clf.backend
     print(json.dumps(res))
 
 

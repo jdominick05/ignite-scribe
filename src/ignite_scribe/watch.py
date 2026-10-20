@@ -133,6 +133,10 @@ class Watcher:
             d, self.pixel_dirty = self.pixel_dirty, {}
         return d
 
+    def reapply(self):
+        """Re-apply the policy soon, reusing every window's content (secure mode's scores arrived)."""
+        self._extra_dirty = True
+
     def set_extra_text(self, hwnd: int, blocks: list | None):
         """Always-on OCR's text for a window (None removes it); the window is re-read on the next refresh."""
         with self._lock:

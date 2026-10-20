@@ -94,6 +94,8 @@ class Policy:
     capture_elevated: bool = False   # may vision copy the pixels of elevated windows (UIA cannot read them)?
     history: bool = False            # record the redacted events and snapshots to disk (history.py)?
     always_on_ocr: bool = False      # read changed pixels of windows UIA cannot describe, on the NPU (always_on.py)?
+    secure_mode: bool = False        # also score window text with the injection classifier, on the iGPU (secure.py)?
+    scanner: object = field(default=None, repr=False, compare=False)   # secure.Scanner, set by the server
 
     @staticmethod
     def load(path: str | Path | None) -> Policy:
@@ -105,6 +107,7 @@ class Policy:
             p.capture_elevated = bool(d.get("capture_elevated", False))
             p.history = bool(d.get("history", False))
             p.always_on_ocr = bool(d.get("always_on_ocr", False))
+            p.secure_mode = bool(d.get("secure_mode", False))
         return p
 
     def excluded(self, w: Window) -> bool:
@@ -129,6 +132,10 @@ class Policy:
                 blocks.append(TextBlock(t, b.rect, b.source, b.role))
             clean = replace(w, title=title, text=blocks)
             clean.flags = injection.flag_window(clean)     # on scrubbed text only: an excerpt holds no secret
+            if self.scanner is not None:                   # secure mode: a score arrives on a later refresh
+                f = self.scanner.flag(clean, injection.category(clean.process))
+                if f is not None:
+                    clean.flags = clean.flags + [f]
             windows.append(clean)
         return replace(snap, windows=windows), dict(windows_withheld=withheld, secrets_withheld=secrets,
                                                     windows_flagged=sum(1 for w in windows if w.flags))

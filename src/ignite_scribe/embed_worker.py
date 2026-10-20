@@ -7,6 +7,8 @@ stops it when idle. Frames are those of ``npu_worker``: a 4-byte little-endian l
 - ``{"op": "ping"}`` -> backend (``dml`` or ``cpu``; none until the first embed opens the GPU session) and why;
 - ``{"op": "embed", "texts": [...]}`` -> raw float16 [n, 384] passage vectors;
 - ``{"op": "search", "query": str, "n": N, "k": K}`` + raw float16 [N, 384] -> the K best rows and scores;
+- ``{"op": "classify", "model_dir": str, "texts": [...]}`` -> the injection classifier's score per text (secure
+  mode, ``injection_model``), on DirectML only;
 - EOF on stdin (the parent closed it or died) -> the process exits, releasing the GPU.
 Passages are embedded on DirectML in fp16; queries on the CPU in fp32 (faster for one short text).
 """
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import time
 import traceback
 
 import numpy as np
@@ -32,7 +35,7 @@ def main(argv=None) -> int:
         pass
     d = model_dir()
     f16 = (d / "model_fp16.onnx").is_file()
-    passages = queries = None              # each opened on first use: a session that only searches never opens the GPU
+    passages = queries = guard = None      # each opened on first use: a session that only searches never opens the GPU
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
 
     def device():
@@ -65,6 +68,15 @@ def main(argv=None) -> int:
                 top = np.argpartition(-s, k - 1)[:k] if k else np.array([], int)
                 top = top[np.argsort(-s[top])]
                 write_frame(stdout, dict(ok=True, idx=top.tolist(), score=[round(float(x), 4) for x in s[top]]))
+            elif op == "classify":
+                if guard is None:
+                    from .injection_model import InjectionClassifier
+                    guard = InjectionClassifier(h["model_dir"], device="cpu" if h.get("cpu") else "dml")
+                t0 = time.perf_counter()
+                scores = guard.score(h["texts"])
+                write_frame(stdout, dict(ok=True, scores=scores, backend=guard.backend, threshold=guard.threshold,
+                                         ms=round((time.perf_counter() - t0) * 1000, 2),
+                                         windows=guard.windows_total))
             else:
                 write_frame(stdout, dict(ok=False, error=f"unknown op {op}"))
         except Exception as e:  # noqa: BLE001

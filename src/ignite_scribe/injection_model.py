@@ -6,6 +6,8 @@ Needs numpy, ``tokenizers`` and ``onnxruntime``, so it runs in a worker, never i
 core stays dependency-free). The model directory holds ``model.onnx``, ``tokenizer.json`` and ``config.json``
 with ``id2label``. Text longer than the model's window is scored in overlapping windows, and the highest
 INJECTION probability counts, since an injection planted at the end of an email must not be truncated away.
+``device="dml"`` runs on the iGPU through DirectML (``model_fp16.onnx`` when present) and raises when DirectML is
+unavailable: secure mode never falls back to the CPU on its own. ``device="cpu"`` is for measurement.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ import numpy as np
 
 class InjectionClassifier:
     def __init__(self, model_dir: str | Path, threads: int = 4, max_len: int = 512, stride: int = 256,
-                 providers=("CPUExecutionProvider",)):
+                 device: str = "cpu"):
         import onnxruntime as ort
         from tokenizers import Tokenizer
         d = Path(model_dir)
@@ -28,10 +30,24 @@ class InjectionClassifier:
         self.tok = Tokenizer.from_file(str(d / "tokenizer.json"))
         self.tok.no_padding()
         self.tok.no_truncation()
+        self.threshold = float(cfg.get("threshold", 0.5))       # chosen on val by the trainer (docs/INJECTION.md)
         o = ort.SessionOptions()
-        o.intra_op_num_threads = threads
         o.log_severity_level = 3
-        self.sess = ort.InferenceSession(str(d / "model.onnx"), o, providers=list(providers))
+        if device == "dml":
+            if "DmlExecutionProvider" not in ort.get_available_providers():
+                raise RuntimeError("DirectML is not available (onnxruntime-directml is not installed)")
+            o.enable_mem_pattern = False                        # DirectML requires both of these
+            o.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            f16 = d / "model_fp16.onnx"
+            self.model_file = f16 if f16.is_file() else d / "model.onnx"
+            self.sess = ort.InferenceSession(str(self.model_file), o, providers=["DmlExecutionProvider"])
+            if "DmlExecutionProvider" not in self.sess.get_providers():
+                raise RuntimeError("DirectML did not take the session")
+        else:
+            o.intra_op_num_threads = threads
+            self.model_file = d / "model.onnx"
+            self.sess = ort.InferenceSession(str(self.model_file), o, providers=["CPUExecutionProvider"])
+        self.backend = device
         self.inputs = {i.name for i in self.sess.get_inputs()}
         self.max_len, self.stride = max_len, stride
         self.cls = self.tok.token_to_id("[CLS]")

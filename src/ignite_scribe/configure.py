@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """``ignite-scribe setup``: choose what ignite-scribe may do, start the background service, connect an agent.
 
-Asks (or takes flags for) three things, each off unless chosen:
+Asks (or takes flags for) four things, each off unless chosen:
 - **history**: record the redacted screen state, encrypted, kept 7 days, searchable by agents;
 - **always-on OCR**: read the text of windows UI Automation cannot describe, continuously, on the NPU only;
+- **secure mode**: also check window text for prompt injection with a classifier, on the iGPU only;
 - **the background service**: a per-user process started at logon that records history and shows the tray
   icon without an agent open (always-on OCR runs in the first agent's server, whose tools read its text).
 It writes them to the user's policy file (``%LOCALAPPDATA%\\ignite-scribe\\policy.json``), keeping any other
@@ -79,6 +80,8 @@ def capabilities() -> dict:
     ok_vision, why_vision = vision_client.available()
     ok_ocr, why_ocr = vision_client.ocr_available()
     ready, why_ready = npu_recognizer_ready()
+    from . import secure
+    ok_sec, why_sec = secure.available()
     try:
         from . import semantic
         ok_sem, why_sem = semantic.available()
@@ -86,11 +89,12 @@ def capabilities() -> dict:
         ok_sem, why_sem = False, str(e)
     return dict(ui_automation=uia.available(), vision=ok_vision, vision_why=why_vision or None,
                 ocr=ok_ocr, ocr_why=why_ocr or None, always_on_ready=ready, always_on_why=why_ready or None,
-                semantic_history=ok_sem, semantic_why=why_sem or None)
+                semantic_history=ok_sem, semantic_why=why_sem or None, secure_mode=ok_sec, secure_why=why_sec or None)
 
 
 def run(history: bool | None = None, always_on: bool | None = None, service: bool | None = None,
-        mcp_config: str | None = None, yes: bool = False, policy_file: Path | None = None) -> int:
+        mcp_config: str | None = None, yes: bool = False, policy_file: Path | None = None,
+        secure_mode: bool | None = None) -> int:
     from . import service as svc
     path = policy_file or default_policy_path()
     pol = read_policy(path)
@@ -100,7 +104,8 @@ def run(history: bool | None = None, always_on: bool | None = None, service: boo
     print(f"  UI Automation text   {'yes' if cap['ui_automation'] else 'no (pip install ignite-scribe[uia])'}")
     print(f"  NPU vision and OCR   {'yes' if cap['vision'] else 'not set up (optional, see the README)'}")
     print(f"  always-on OCR ready  {'yes' if cap['always_on_ready'] else 'no: ' + (cap['always_on_why'] or '')}")
-    print(f"  semantic history     {'yes' if cap['semantic_history'] else 'keyword search only'}\n")
+    print(f"  semantic history     {'yes' if cap['semantic_history'] else 'keyword search only'}")
+    print(f"  secure-mode model    {'yes' if cap['secure_mode'] else 'not installed yet'}\n")
     if history is None:
         history = (_ask("Record an encrypted, redacted screen history (7 days) that agents can search?",
                         bool(pol.get("history", False))) if interactive else bool(pol.get("history", False)))
@@ -108,14 +113,20 @@ def run(history: bool | None = None, always_on: bool | None = None, service: boo
         cur = bool(pol.get("always_on_ocr", False))
         always_on = (_ask("Read text in windows UI Automation cannot describe, continuously, on the NPU?", cur)
                      if interactive and cap["always_on_ready"] else cur)
+    if secure_mode is None:
+        cur = bool(pol.get("secure_mode", False))
+        secure_mode = (_ask("Secure mode: also check screen text for prompt injection with a classifier on the iGPU?",
+                            cur) if interactive else cur)
     if service is None:
         want = history or svc.installed() is not None
         service = _ask("Run ignite-scribe in the background at logon (tray icon; records history without an agent)?",
                        want) if interactive else want
-    pol["history"], pol["always_on_ocr"] = bool(history), bool(always_on)
+    pol["history"], pol["always_on_ocr"], pol["secure_mode"] = bool(history), bool(always_on), bool(secure_mode)
     write_policy(path, pol)
     print(f"\n  policy      {path}")
     print(f"  history     {'on' if history else 'off'}")
+    print(f"  secure      {'on' if secure_mode else 'off'}" + ("" if cap["secure_mode"] or not secure_mode
+                                                              else " (waits until its model is installed)"))
     print(f"  always-on   {'on' if always_on else 'off'}" + ("" if cap["always_on_ready"] or not always_on
                                                              else " (waits until the NPU recognizer is installed)"))
     if service:

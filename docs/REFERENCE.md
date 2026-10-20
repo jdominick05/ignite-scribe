@@ -38,7 +38,7 @@ not thereby safe.
 | this desktop, 60 s of the watcher's state | n/a | 0 flagged windows |
 
 An off-the-shelf classifier was measured and rejected: it flags 62% of ordinary emails and 12% of UI lines
-([INJECTION.md](INJECTION.md)). A classifier trained on screen text is parked. The patterns were tuned on the
+([INJECTION.md](INJECTION.md)). A classifier trained on screen text is in progress. The patterns were tuned on the
 train splits only.
 
 **Waiting instead of polling.** `wait_for` blocks until text appears (`text`), goes (`gone`), or anything
@@ -61,11 +61,15 @@ rule):
 Each polling turn also re-reads the agent's context, which this table does not count.
 
 **The tray icon.** While any MCP session runs, one dot in the notification area shows what ignite-scribe is
-doing:
-- blue: watching windows and their UI Automation text;
-- amber: reading pixels (`find_ui_elements`, `ocr_windows`, always-on OCR);
-- white: always-on OCR is paused;
-- grey: not reading the screen.
+doing. Each state has its own shape as well as its own colour:
+- a blue eye: watching windows and their UI Automation text, no pixels;
+- amber lines of text: reading pixels (`find_ui_elements`, `ocr_windows`, always-on OCR);
+- white pause bars: always-on OCR is paused (a `find_ui_elements` or `ocr_windows` call still shows as reading);
+- a grey slashed ring: not reading the screen.
+
+A red dot at its lower right means history is being recorded. Hovering shows the same in words, with history and
+always-on OCR on their own lines. Clicking opens a menu with that status, how many ignite-scribe processes are
+running, a key to the icons, and "Pause always-on OCR" when it is running (otherwise it says always-on OCR is off).
 
 Its tooltip says which, across all sessions, and whether history is recording. Click it to pause or resume
 always-on OCR, or to hide the icon. Each session writes a small status file with flags only, no screen content,
@@ -100,6 +104,16 @@ events in memory only, unless history is on.
   `IGNITE_SCRIBE_EMBED=0` turns it off. Setup: `pip install -e .[embed]`, put `model.onnx` and `tokenizer.json`
   from `BAAI/bge-small-en-v1.5` (its `onnx/` folder) in `models/embed/bge-small-en-v1.5/`, then
   `python tools/make_embed_fp16.py` (needs `onnx onnxconverter-common`) for the faster fp16 copy.
+
+**Secure mode (opt-in, iGPU only; its model is in training).** `"secure_mode": true` in the policy, or
+`IGNITE_SCRIBE_SECURE=1`. A classifier fine-tuned on screen text (INJECTION.md, tier 2) scores each window's
+redacted text.
+- It runs in the embedding worker on DirectML, at below-normal priority, and exits after 60 s idle. When DirectML
+  is unavailable it stays off; it never runs on the CPU. `scribe_status` says why.
+- Scoring is asynchronous: a new text is queued, and its `classifier` flag (with its score) appears on the next
+  refresh. Scores are kept by a digest of the text, not the text.
+- Withheld windows are never scored.
+- The model is looked up in `IGNITE_SCRIBE_SECURE_MODEL`, then `%LOCALAPPDATA%\ignite-scribe\models\injection\scribe-guard`.
 
 **Always-on OCR (opt-in, NPU only).** `IGNITE_SCRIBE_ALWAYS_ON=1` or
 `"always_on_ocr": true` in the policy. One server per machine reads, as their pixels change, the text of windows UI

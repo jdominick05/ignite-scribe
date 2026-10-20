@@ -50,16 +50,65 @@ It was trained on prompts typed at chatbots. On screen text it flags ordinary em
 holds hundreds of lines, so nearly every window would be flagged. Off-the-shelf classifiers therefore do not
 ship here. The module that runs one (`injection_model.py`) stays, for evaluation and for the model below.
 
-## Tier 2: a classifier trained on screen text (parked, 2026-10-19)
+## Tier 2: a classifier trained on screen text (secure mode, in progress)
 
-This follows the ScribeRec route: a model trained for this domain, small and int8-friendly, so it runs exactly
-on the NPU in the vision worker. A CPU fallback exists only for measurement.
-- **Positives:** injections from the permissive sets' train splits, plus generated ones. They are planted in
-  screen-like contexts (pages, emails, chat, documents, terminals, UI) at random positions, with the kinds above
-  and paraphrases.
-- **Negatives:** screen-like text: UI lines, emails, documents, code, terminal output, chat. Also hard negatives:
-  text *about* prompt injection, such as security articles, this file, and detector code. Agents read such text
-  all day, and it is the obvious false-positive class.
-- **The target:** recall on planted BIPIA attacks well above the patterns' 12%, with false positives on benign
-  emails and UI lines in the patterns' range (0 in these sets). Judged per set, on held-out data, on the NPU.
-- The model and its recipe live in ignite-xdna, like ScribeRec. Training runs on Desktop 1's GPU.
+Revived by the user on 2026-10-19 as an opt-in **secure mode**: a fine-tuned encoder scores window text the
+patterns pass, on the **iGPU only** (DirectML fp16 in a worker process, like semantic history). It never runs in
+the MCP server and never as a CPU load; the CPU path is for measurement. The NPU has no encoder path yet (XDNA
+Worker, 2026-10-19: Laya's encoder ran only its weight GEMMs on the NPU, and a bge port is engine work), so that is
+not planned.
+
+**Model.** BAAI/bge-small-en-v1.5 (MIT; BERT, 12 layers, hidden 384, uncased, 512 positions) with a two-class
+head. English only: German, French and Spanish stay with the patterns.
+
+**Data** (`tools/injection_data.py`, git-ignored `calib/injection_train/`, `manifest.json` has the counts):
+- **Sources:** train splits only (deepset, Gandalf, BIPIA train attacks), generated attacks, and generated or
+  permissive contexts (emails, chat, terminals, UI lines from seeds 1000 and up, Python stdlib and this repo's code
+  and docs).
+- **Dedup:** 56 texts that equal or nearly equal (word-set Jaccard >= 0.7) an eval-set text were dropped: 11
+  attacks or prompts, and 45 of BIPIA's 50 train emails, near-copies of its test emails.
+- **Labelling policy, fixed before training:** an instruction to an agent planted anywhere is positive. Text
+  *about* injection that quotes one is negative, and so is an instruction addressed to a person ("ignore my last
+  email") or ordinary system wording ("You are now connected").
+- **Split by item, before planting:** every pool is split 80/10/10 by a hash of the item: payloads, files,
+  templates, generated sentences and UI seeds. Val and test carriers and payloads are unseen in training.
+  - Model Work's audit of a first build found val and test carriers that were near-copies of train text (a small
+    sentence pool shared across splits), which would have tuned the threshold on memorized text.
+  - In the rebuild, 0.1% of val and 0.6-0.7% of the test rows are near-copies of train (>= 90% of their 8-word
+    shingles in train).
+  - Carriers are trimmed by the payload's length, so the label medians match (441 / 447 characters in train).
+- **Splits:** 36,000 train, 4,000 val. Held-out tests:
+  - `test_generated`: the test split's pools;
+  - `test_hardneg`: the test split's hard negatives;
+  - `test_transfer`: BIPIA test attacks in its table and code contexts. Their provenance is unstated (the code is
+    Stack Overflow), so they are never trained on.
+
+**Pre-registered** (before any training):
+- **Threshold:** chosen on val only, as the lowest score at which val's benign false-positive rate is <= 0.5% and
+  val's hard negatives are <= 2%. It is then frozen.
+- **Reporting:** for the classifier alone and for "either" (patterns or classifier), per set, on the iGPU.
+- **Targets for "either":**
+
+| set | target |
+|---|---|
+| BIPIA planted in emails (`injection_eval.py`) | recall >= 60% (patterns: 12.0%) |
+| BIPIA benign emails | false positives <= 1 of 50 |
+| deepset test, English rows | recall >= 60% (DE reported separately) |
+| Gandalf test | recall >= 90% |
+| seed-100 UI lines | false positives <= 0.5% |
+| `test_hardneg` | **classifier alone**: false positives <= 5% (see below) |
+| `test_transfer` | recall >= 50%, false positives <= 5% |
+
+**Corrected before training (2026-10-19):** the patterns alone flag 49.7% of `test_hardneg`, because a quoted attack
+in an article matches them as a real one does. "Either" therefore cannot meet a 5% ceiling there, so that target
+applies to the classifier alone. Whether secure mode should let a confident "benign" score clear a pattern flag is
+decided after the results, and is not assumed here. Patterns-only baselines on the new sets: `test_generated`
+recall 69.3% with 25.2% false positives (its hard negatives), `test_transfer` recall 12.7% with 0%, deepset
+English 31.6%, German 18.2%.
+| this desktop, 60 s (`injection_live.py`) | reported; any flagged window is inspected by count only |
+
+- **Cost:** ms per 512-token window on the 780M is reported.
+
+A miss is reported as a miss; the threshold is not re-tuned on test.
+
+The trained model and its recipe live in ignite-xdna, like ScribeRec. Training runs on Desktop 1's GPU.

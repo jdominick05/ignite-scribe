@@ -1,6 +1,7 @@
 # Copyright (C) 2026 The ignite-scribe contributors
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""ignite-scribe setup [--history|--no-history] [--always-on|--no-always-on] [--service|--no-service]
+"""ignite-scribe setup [--history|--no-history] [--always-on|--no-always-on] [--secure|--no-secure]
+              [--service|--no-service]
               [--mcp-config FILE] [--yes]
 ignite-scribe service {install,uninstall,start,stop,restart,status}
 ignite-scribe status
@@ -38,7 +39,8 @@ def main(argv=None) -> int:
     sub.add_parser("resume", help="resume always-on OCR")
     sub.add_parser("mcp", help="serve the MCP tools on stdio")
     st = sub.add_parser("setup", help="choose history, always-on OCR and the background service; connect an agent")
-    for flag, name in (("history", "history"), ("always-on", "always_on"), ("service", "service")):
+    for flag, name in (("history", "history"), ("always-on", "always_on"), ("service", "service"),
+                       ("secure", "secure_mode")):
         g = st.add_mutually_exclusive_group()
         g.add_argument(f"--{flag}", dest=name, action="store_true", default=None)
         g.add_argument(f"--no-{flag}", dest=name, action="store_false")
@@ -51,7 +53,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "setup":
         from .configure import run
-        return run(a.history, a.always_on, a.service, a.mcp_config, a.yes)
+        return run(a.history, a.always_on, a.service, a.mcp_config, a.yes, secure_mode=a.secure_mode)
     if a.cmd == "daemon":
         from .service import daemon
         return daemon()

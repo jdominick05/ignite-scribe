@@ -28,7 +28,7 @@ irm https://raw.githubusercontent.com/jdominick05/ignite-scribe/main/install.ps1
 ```
 
 It finds Python (or installs it for you with winget), sets up its own environment under
-`%LOCALAPPDATA%\ignite-scribe`, puts the `ignite-scribe` command on your user PATH and asks three questions.
+`%LOCALAPPDATA%\ignite-scribe`, puts the `ignite-scribe` command on your user PATH and asks four questions.
 Everything is off unless you say yes. No administrator rights and no Git. Outside that folder it changes only your
 user PATH and, if you choose the background service, one logon entry for your account.
 
@@ -123,19 +123,17 @@ was read.</sub>
   Unicode, "don't tell the user…") is flagged on its window, and so is the app it came from.
 - **Optional memory.** An encrypted, 7-day history of what was on screen, which agents can search by words or by
   meaning: *"the article about GPU prices"*.
-- **You can always see it.** A dot in the notification area shows when your screen is being read:
-  <img src="https://img.shields.io/badge/-%E2%97%8F%20watching-2878e6?style=flat" alt="blue">
-  <img src="https://img.shields.io/badge/-%E2%97%8F%20reading%20pixels-f0a014?style=flat" alt="amber">
-  <img src="https://img.shields.io/badge/-%E2%97%8F%20paused-dddddd?style=flat" alt="white">
-  <img src="https://img.shields.io/badge/-%E2%97%8F%20idle-969696?style=flat" alt="grey">.
-  Click it to pause.
+- **You can always see it.** An icon in the notification area shows when your screen is being read: an eye while
+  windows are watched, lines of text while pixels are read, pause bars when paused, a slashed ring when nothing is
+  read, and a red dot while history records. Hover over it for the status in words; click it for details and a key.
 
-## The three questions setup asks
+## The four questions setup asks
 
 | | What it does | Default |
 |---|---|---|
 | **History** | Records the *redacted* screen state: change events, and a snapshot every 5 minutes while things change. It is encrypted with a key only your Windows account can unlock, and deleted after 7 days. No screenshots, ever. | off |
 | **Always-on OCR** | Reads the text of windows UI Automation cannot describe (canvas apps, remote desktops, video), as they change, on the NPU only, while an agent is connected. It pauses on battery. | off |
+| **Secure mode** | Also checks window text for prompt injection with a classifier trained on screen text, on the iGPU only (never the CPU). Its flags add to the pattern flags a moment later. *The model is in training; until it is installed, secure mode waits.* | off |
 | **Background service** | A small process started at logon. It records history and shows the tray dot even with no agent open; agents then search the history it keeps. | on when history is |
 
 Change your answers at any time with `ignite-scribe setup`.
@@ -155,7 +153,7 @@ Change your answers at any time with `ignite-scribe setup`.
 ## Commands
 
 ```text
-ignite-scribe setup              the three questions; prints the agent entry   (--yes, --mcp-config FILE)
+ignite-scribe setup              the four questions; prints the agent entry    (--yes, --mcp-config FILE)
 ignite-scribe status             what it is doing now, across every session
 ignite-scribe snapshot           the redacted screen, as your agent would get it (--json, --no-text)
 ignite-scribe watch              change events as they happen
