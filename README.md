@@ -37,7 +37,7 @@ user PATH and, if you choose the background service, one logon entry for your ac
 
 ```powershell
 # no questions, no background service, a specific version
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jdominick05/ignite-scribe/main/install.ps1))) -Yes -NoService -Ref main
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jdominick05/ignite-scribe/main/install.ps1))) -Yes -NoService -Ref v0.1.0
 ```
 
 Already manage Python yourself? Any 64-bit Python 3.11+ on Windows works:

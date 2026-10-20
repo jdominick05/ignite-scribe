@@ -28,7 +28,7 @@
     settings live there too).
 
 .PARAMETER Ref
-    The branch or tag to install. Default: main.
+    The branch or tag to install (v0.1.0 or later; earlier versions have no setup). Default: main.
 
 .PARAMETER Source
     Install from this local checkout or archive instead of GitHub (for testing a change).
