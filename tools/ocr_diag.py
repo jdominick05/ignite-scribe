@@ -17,6 +17,7 @@ Printed, aggregated over all samples (no text, no crops):
 - CER by crop height (pixels, before the resize to 80);
 - ink padding above and below each crop;
 - the top substitution pairs (reference char -> read char, with counts; '' is an insertion or deletion);
+- whether each ScribeRec space error sits in a run of 2+ spaces in the raw UIA line, or at a single space;
 - the terminal's renderer settings (font, size, antialiasing, graphics API) and the window's DPI.
 
 Run with the vision worker's Python (3.13, OpenCV and ONNX Runtime), on the CPU:
@@ -46,8 +47,28 @@ def norm(s: str) -> str:
     return " ".join(s.split())
 
 
-def align(hyp: str, truth: str) -> tuple[int, list[tuple[str, str]]]:
-    """Edit distance from ``hyp`` to the closest substring of ``truth``, and its edits as (ref, read) pairs."""
+def norm_runs(s: str) -> tuple[str, list[int]]:
+    """``norm`` plus, for each character kept, the length of the whitespace run it stands for (1 for others)."""
+    out, runs, i = [], [], 0
+    s = s.strip()
+    while i < len(s):
+        if s[i].isspace():
+            j = i
+            while j < len(s) and s[j].isspace():
+                j += 1
+            out.append(" ")
+            runs.append(j - i)
+            i = j
+        else:
+            out.append(s[i])
+            runs.append(1)
+            i += 1
+    return "".join(out), runs
+
+
+def align(hyp: str, truth: str) -> tuple[int, list[tuple[str, str, int]]]:
+    """Edit distance from ``hyp`` to the closest substring of ``truth``, and its edits as (ref, read, truth index)
+    (index -1 for an insertion)."""
     n, m = len(hyp), len(truth)
     d = np.zeros((n + 1, m + 1), np.int32)
     d[:, 0] = np.arange(n + 1)
@@ -59,19 +80,19 @@ def align(hyp: str, truth: str) -> tuple[int, list[tuple[str, str]]]:
     while i > 0 and j > 0:
         if d[i, j] == d[i - 1, j - 1] + (hyp[i - 1] != truth[j - 1]):
             if hyp[i - 1] != truth[j - 1]:
-                edits.append((truth[j - 1], hyp[i - 1]))
+                edits.append((truth[j - 1], hyp[i - 1], j - 1))
             i, j = i - 1, j - 1
         elif d[i, j] == d[i - 1, j] + 1:
-            edits.append(("", hyp[i - 1]))
+            edits.append(("", hyp[i - 1], -1))
             i -= 1
         elif d[i, j] == d[i, j - 1] + 1:
             if d[i, 0] == d[i, j]:                    # the free start: stop taking deletions before the match
                 break
-            edits.append((truth[j - 1], ""))
+            edits.append((truth[j - 1], "", j - 1))
             j -= 1
         else:
             break
-    edits += [("", hyp[k]) for k in range(i)]
+    edits += [("", hyp[k], -1) for k in range(i)]
     return int(d[n, int(np.argmin(d[n]))]) if m else n, edits
 
 
@@ -146,7 +167,7 @@ def main():
             "name": "get_screen_state", "arguments": {"format": "json", "max_windows": 12, "refresh": True}}}) + "\n")
         srv.stdin.flush()
         d = json.loads(json.loads(srv.stdout.readline())["result"]["content"][0]["text"])
-        return {w["hwnd"]: [norm(l) for b in w["text"] if b["source"] == "uia" for l in b["text"].split("\n")
+        return {w["hwnd"]: [norm_runs(l) for b in w["text"] if b["source"] == "uia" for l in b["text"].split("\n")
                             if l.strip()] for w in d["windows"]}
 
     stats = {k: [0, 0] for k in ("scriberec", "scriberec_ascii", "ppocr")}
@@ -154,6 +175,7 @@ def main():
     subs = collections.Counter()
     pads, n_lines, skipped, used, dpis = [], 0, 0, 0, set()
     unmatched = collections.Counter()
+    space_err = collections.Counter()
     snap0 = windows.snapshot()
     targets = [w for w in snap0.windows if a.match.lower() in w.process.lower() and not w.minimized]
     for target in targets:
@@ -166,7 +188,8 @@ def main():
             tw = next((w for w in snap.windows if w.hwnd == target.hwnd), None)
             res = capture.masked_window(snap, tw, excluded_fn(policy)) if tw else None
             after = uia_lines().get(target.hwnd)
-            stable = [l for l in before or [] if l in set(after or [])]
+            after_set = {t for t, _ in after or []}
+            stable = [l for l in before or [] if l[0] in after_set]
             if not stable or res is None or len(stable) < 0.5 * len(before):
                 skipped += 1
                 time.sleep(0.5)
@@ -184,7 +207,7 @@ def main():
                     t = norm(t)
                     if not t:
                         continue
-                    best = min(((align(t, ref)) for ref in stable), key=lambda x: x[0])
+                    best, runs = min(((align(t, ref), runs) for ref, runs in stable), key=lambda x: x[0][0])
                     if best[0] > 0.5 * len(t):
                         unmatched[k] += 1
                         continue
@@ -195,7 +218,10 @@ def main():
                         bin_ = f"{h // 4 * 4}-{h // 4 * 4 + 3}px"
                         by_h[bin_][0] += best[0]
                         by_h[bin_][1] += len(t)
-                        subs.update(best[1])
+                        subs.update((r, h) for r, h, _ in best[1])
+                        for r, h, j in best[1]:
+                            if r == " ":
+                                space_err["in_run_of_2+" if runs[j] >= 2 else "single_space"] += 1
             for crop in crops:
                 pads.append(padding(crop))
             n_lines += len(crops)
@@ -212,6 +238,7 @@ def main():
         ink_padding_px=dict(top_median=top[len(top) // 2] if top else None, bottom_median=bot[len(bot) // 2] if bot else None,
                             top_zero_share=round(sum(1 for x in top if x == 0) / max(len(top), 1), 3),
                             bottom_zero_share=round(sum(1 for x in bot if x == 0) / max(len(bot), 1), 3)),
+        scriberec_space_errors=dict(space_err), scorer="whitespace runs collapsed to one space on both sides",
         scriberec_top_substitutions=[dict(ref=r, read=h, n=n) for (r, h), n in subs.most_common(20)],
         dpi=sorted(dpis), terminal=terminal_settings(),
         crop_source="PP-OCRv5 DBNet boxes from ink (unclip 1.5), rows merged; not UIA ranges"), ensure_ascii=False))
