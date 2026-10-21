@@ -60,15 +60,15 @@ turn screenshots into clickable elements. ignite-scribe differs in four ways:
 | Semantic history search | 0.0.8 | bge-small on the iGPU (DirectML); vectors encrypted like the text |
 | `wait_for`: wait for text, its absence, a change or quiet | 0.0.9 | 1 call against 6-12 polling turns |
 | Action checker | 0.0.9 | `wait_for(since=..., quiet_s=0.5)` after an action reports what it changed |
-| ScribeRec: a text recognizer trained for the NPU | 0.0.9 | Release-03 (after 0.1.0): 0.22% character errors on a real terminal against PP-OCRv5's 0.48%; exact on the NPU |
+| ScribeRec: a text recognizer trained for the NPU | 0.0.9 | Release-03 (0.2.0): 0.22% character errors on a real terminal against PP-OCRv5's 0.48%; exact on the NPU |
 | Line cache for OCR | 0.0.9 | About 89% of lines reused on scrolling content |
 | Always-on OCR (opt-in, NPU only) | 0.0.9 | Yields to NPU measurements, battery and pause; 1.3% of a core in the server |
 | Prompt-injection flags, pattern tier | 0.1.0 | Hidden characters, overrides (EN/DE/FR/ES), role and address patterns; 0 false positives on UI lines and benign emails |
 | Tray icon: shows when the screen is being read | 0.1.0 | Watching, reading pixels, paused or idle; pause from the menu |
-| Tray polish and live settings | after 0.1.0 | Icons with shapes (no colour key needed), every setting in the menu, applied live; the background service owns the icon |
+| Tray polish and live settings | 0.2.0 | Icons with shapes (no colour key needed), every setting in the menu, applied live; the background service owns the icon |
 | One-line installer, `ignite-scribe setup`, background service | 0.1.0 | No admin rights, no Git; a per-user logon entry |
-| `get_selection`: the text the user highlighted (idea 2) | after 0.1.0 | Text pattern of the focused control; policy first, password fields never read, scrubbed and flagged |
-| `find_element`: the element map for clicking (idea 1) | after 0.1.0 | Name, role and window search; a click point the OS confirms reaches the control's window (menus and the taskbar included); enabled, accelerator and access keys, AutomationId, actions |
+| `get_selection`: the text the user highlighted (idea 2) | 0.2.0 | Text pattern of the focused control; policy first, password fields never read, scrubbed and flagged |
+| `find_element`: the element map for clicking (idea 1) | 0.2.0 | Name, role and window search; a click point the OS confirms reaches the control's window (menus and the taskbar included); enabled, accelerator and access keys, AutomationId, actions |
 
 ## 🔨 In progress
 
