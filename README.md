@@ -19,6 +19,23 @@
 
 ---
 
+## When to use it
+
+**If an app has its own MCP server or agent integration, use that.** IDEs (JetBrains, VS Code), GitHub and
+agent-driven browsers give an agent the exact file, selection or page, which beats reading pixels and
+accessibility trees. JetBrains IDEs in particular expose almost nothing to Windows UI Automation, so ignite-scribe
+sees them only through OCR.
+
+**ignite-scribe is for everything else:**
+- **Apps that will never have an MCP server:** installers, settings and error dialogs, vendor tools, legacy and
+  line-of-business apps, launchers, remote-desktop sessions.
+- **The space between apps:** "what is that dialog asking?", "which window wants input?", "what did the terminal
+  print while I was away?", with change events and an optional searchable history across all of them.
+- **Text with no structure behind it:** canvases, images, video and remote screens, through OCR (and a UI-element
+  detector on an AMD Ryzen AI NPU).
+- **Whatever an agent reads off your screen:** redaction runs first, password fields are never read, and text that
+  looks written to instruct an agent is flagged.
+
 ## Install
 
 Paste into PowerShell, and again later to update:
